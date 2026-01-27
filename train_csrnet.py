@@ -1,24 +1,23 @@
 """
-Training Script for LCDNet Crowd Density Estimation.
+Training Script for CSRNet on NWPU-Crowd Dataset.
 
-This script trains the LCDNet model on the UCSD Crowd Dataset for crowd
-density estimation. It includes:
+This script trains CSRNet for dense crowd density estimation. It includes:
 - Training loop with MSE loss
+- Optional counting loss (L1) for improved count accuracy
 - Validation after each epoch
-- Learning rate scheduling
-- Early stopping
-- Checkpoint saving
+- Learning rate scheduling with ReduceLROnPlateau
+- Early stopping based on validation MAE
+- Checkpoint saving (best model based on validation MAE)
 - Progress logging
 
 Usage:
-    python train.py
-    python train.py --epochs 50 --batch_size 4 --lr 1e-4
+    python train_csrnet.py
+    python train_csrnet.py --epochs 100 --batch_size 4 --lr 1e-5
 
 Prerequisites:
-    - Run preprocess.py first to prepare the dataset
-    - GPU recommended for faster training
+    - Run preprocess_nwpu.py first to prepare the dataset
 
-Author: Thesis Implementation
+Author: Thesis Implementation - Phase 2 Part 2
 """
 
 import os
@@ -36,27 +35,50 @@ from tqdm import tqdm
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
-from dataset import create_dataloaders
-from models.lcdnet import LCDNet, create_model
+from dataset_nwpu import create_nwpu_dataloaders
+from models.csrnet import CSRNet, create_csrnet
 from utils.metrics import compute_mae, compute_mse, density_to_count
+
+
+# ============================================================================
+# CSRNET-SPECIFIC CONFIGURATION
+# ============================================================================
+
+# CSRNet typically uses smaller learning rate due to pretrained VGG frontend
+CSRNET_LR = 1e-5
+
+# Checkpoint directory for CSRNet
+CSRNET_CHECKPOINTS_DIR = os.path.join(config.CHECKPOINTS_DIR, "csrnet")
 
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description='Train LCDNet for crowd density estimation'
+        description='Train CSRNet on NWPU-Crowd dataset for dense crowd counting'
     )
     parser.add_argument(
-        '--epochs', type=int, default=config.NUM_EPOCHS,
-        help=f'Number of training epochs (default: {config.NUM_EPOCHS})'
+        '--epochs', type=int, default=100,
+        help='Number of training epochs (default: 100)'
     )
     parser.add_argument(
-        '--batch_size', type=int, default=config.BATCH_SIZE,
-        help=f'Batch size (default: {config.BATCH_SIZE})'
+        '--batch_size', type=int, default=4,
+        help='Batch size (default: 4, smaller due to large model)'
     )
     parser.add_argument(
-        '--lr', type=float, default=config.LEARNING_RATE,
-        help=f'Learning rate (default: {config.LEARNING_RATE})'
+        '--lr', type=float, default=CSRNET_LR,
+        help=f'Learning rate (default: {CSRNET_LR})'
+    )
+    parser.add_argument(
+        '--weight_decay', type=float, default=1e-4,
+        help='Weight decay for Adam optimizer (default: 1e-4)'
+    )
+    parser.add_argument(
+        '--count_loss_weight', type=float, default=0.1,
+        help='Weight for counting loss term (default: 0.1, higher for NWPU-Crowd)'
+    )
+    parser.add_argument(
+        '--freeze_frontend', action='store_true',
+        help='Freeze VGG-16 frontend weights (train only backend)'
     )
     parser.add_argument(
         '--resume', type=str, default=None,
@@ -69,23 +91,23 @@ def parse_args():
     return parser.parse_args()
 
 
-class Trainer:
+class CSRNetTrainer:
     """
-    Training manager for LCDNet.
+    Training manager for CSRNet on NWPU-Crowd dataset.
     
     Handles the complete training pipeline including:
     - Model training and validation
-    - Loss computation and optimization
+    - Combined loss (MSE + count loss)
     - Checkpoint saving and loading
     - Learning rate scheduling
     - Early stopping
     - Logging and progress tracking
     
     Attributes:
-        model: LCDNet model instance.
+        model: CSRNet model instance.
         train_loader: DataLoader for training data.
         val_loader: DataLoader for validation data.
-        criterion: Loss function (MSE).
+        criterion: Loss function (MSE for density).
         optimizer: Adam optimizer.
         scheduler: Learning rate scheduler.
         device: Training device (cuda/cpu).
@@ -97,40 +119,47 @@ class Trainer:
         train_loader,
         val_loader,
         learning_rate: float,
+        weight_decay: float,
+        count_loss_weight: float,
         device: str
     ):
         """
         Initialize the trainer.
         
         Args:
-            model: LCDNet model to train.
+            model: CSRNet model to train.
             train_loader: DataLoader for training data.
             val_loader: DataLoader for validation data.
             learning_rate: Initial learning rate.
+            weight_decay: Weight decay for regularization.
+            count_loss_weight: Weight for counting loss term.
             device: Device to train on.
         """
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
+        self.count_loss_weight = count_loss_weight
         
         # Loss function: MSE between predicted and ground truth density maps
-        # MSE penalizes large errors more, encouraging accurate density estimation
+        # MSE is standard for density map regression
         self.criterion = nn.MSELoss()
         
-        # Optimizer: Adam with weight decay for regularization
+        # Optimizer: Adam with weight decay
+        # Lower learning rate for pretrained VGG frontend
         self.optimizer = optim.Adam(
             model.parameters(),
             lr=learning_rate,
-            weight_decay=config.WEIGHT_DECAY
+            weight_decay=weight_decay
         )
         
-        # Learning rate scheduler: reduce LR when validation loss plateaus
+        # Learning rate scheduler: reduce LR when validation MAE plateaus
         self.scheduler = ReduceLROnPlateau(
             self.optimizer,
             mode='min',
-            factor=config.LR_SCHEDULER_FACTOR,
-            patience=config.LR_SCHEDULER_PATIENCE
+            factor=0.5,
+            patience=10,
+            min_lr=1e-7
         )
         
         # Training state
@@ -144,7 +173,7 @@ class Trainer:
         self.val_maes = []
         
         # Create checkpoint directory
-        os.makedirs(config.CHECKPOINTS_DIR, exist_ok=True)
+        os.makedirs(CSRNET_CHECKPOINTS_DIR, exist_ok=True)
     
     def train_epoch(self) -> float:
         """
@@ -160,9 +189,6 @@ class Trainer:
         self.model.train()
         total_loss = 0.0
         num_batches = 0
-        
-        # Weight for counting loss (higher = more emphasis on correct count)
-        count_loss_weight = 0.01
         
         pbar = tqdm(self.train_loader, desc=f"Epoch {self.current_epoch}")
         
@@ -182,15 +208,18 @@ class Trainer:
             density_loss = self.criterion(pred_density, density_maps)
             
             # Compute counting loss (L1 between predicted and GT counts)
-            # pred_count = sum of predicted density map
-            pred_counts = pred_density.sum(dim=[1, 2, 3])  # Sum over H, W, C
+            # This helps the model focus on getting accurate counts
+            pred_counts = pred_density.sum(dim=[1, 2, 3])
             count_loss = torch.nn.functional.l1_loss(pred_counts, counts)
             
             # Combined loss
-            loss = density_loss + count_loss_weight * count_loss
+            loss = density_loss + self.count_loss_weight * count_loss
             
             # Backward pass
             loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             
             # Update weights
             self.optimizer.step()
@@ -199,7 +228,7 @@ class Trainer:
             total_loss += loss.item()
             num_batches += 1
             
-            # Update progress bar with both losses
+            # Update progress bar
             pbar.set_postfix({
                 'loss': f'{loss.item():.6f}',
                 'cnt_loss': f'{count_loss.item():.2f}'
@@ -228,7 +257,7 @@ class Trainer:
                 # Forward pass
                 pred_density = self.model(images)
                 
-                # Compute loss
+                # Compute loss (MSE only for validation metric)
                 loss = self.criterion(pred_density, density_maps)
                 total_loss += loss.item()
                 
@@ -268,13 +297,13 @@ class Trainer:
             'val_maes': self.val_maes,
         }
         
-        path = os.path.join(config.CHECKPOINTS_DIR, filename)
+        path = os.path.join(CSRNET_CHECKPOINTS_DIR, filename)
         torch.save(checkpoint, path)
         
         if is_best:
-            best_path = os.path.join(config.CHECKPOINTS_DIR, 'best_model.pth')
+            best_path = os.path.join(CSRNET_CHECKPOINTS_DIR, 'csrnet_best.pth')
             torch.save(checkpoint, best_path)
-            print(f"  Saved best model with MAE: {self.best_val_mae:.4f}")
+            print(f"  ✓ Saved best model with MAE: {self.best_val_mae:.4f}")
     
     def load_checkpoint(self, path: str):
         """
@@ -305,14 +334,20 @@ class Trainer:
             resume_path: Path to checkpoint to resume from.
         """
         print("\n" + "=" * 60)
-        print("Starting Training")
+        print("Starting CSRNet Training on NWPU-Crowd")
         print("=" * 60)
         print(f"Device: {self.device}")
         print(f"Epochs: {num_epochs}")
         print(f"Batch size: {self.train_loader.batch_size}")
         print(f"Training samples: {len(self.train_loader.dataset)}")
         print(f"Validation samples: {len(self.val_loader.dataset)}")
-        print(f"Model parameters: {self.model.count_parameters():,}")
+        print(f"Count loss weight: {self.count_loss_weight}")
+        
+        # Count parameters
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"Total parameters: {total_params:,}")
+        print(f"Trainable parameters: {trainable_params:,}")
         print("=" * 60)
         
         # Resume if checkpoint provided
@@ -320,6 +355,7 @@ class Trainer:
             self.load_checkpoint(resume_path)
         
         start_time = time.time()
+        early_stop_patience = 25
         
         for epoch in range(self.current_epoch, num_epochs):
             self.current_epoch = epoch
@@ -342,11 +378,11 @@ class Trainer:
             current_lr = self.optimizer.param_groups[0]['lr']
             print(f"\nEpoch {epoch}/{num_epochs - 1}:")
             print(f"  Train Loss: {train_loss:.6f}")
-            print(f"  Val Loss: {val_loss:.6f}")
-            print(f"  Val MAE: {val_mae:.4f}")
-            print(f"  Val MSE: {val_mse:.4f}")
-            print(f"  LR: {current_lr:.2e}")
-            print(f"  Time: {epoch_time:.1f}s")
+            print(f"  Val Loss:   {val_loss:.6f}")
+            print(f"  Val MAE:    {val_mae:.2f}")
+            print(f"  Val MSE:    {val_mse:.2f}")
+            print(f"  LR:         {current_lr:.2e}")
+            print(f"  Time:       {epoch_time:.1f}s")
             
             # Check for improvement
             is_best = val_mae < self.best_val_mae
@@ -357,12 +393,12 @@ class Trainer:
                 self.epochs_without_improvement += 1
             
             # Save checkpoint
-            if epoch % config.CHECKPOINT_INTERVAL == 0 or is_best:
-                self.save_checkpoint(f'checkpoint_epoch_{epoch}.pth', is_best)
+            if epoch % 5 == 0 or is_best:
+                self.save_checkpoint(f'csrnet_epoch_{epoch}.pth', is_best)
             
             # Early stopping
-            if self.epochs_without_improvement >= config.EARLY_STOPPING_PATIENCE:
-                print(f"\nEarly stopping: No improvement for {config.EARLY_STOPPING_PATIENCE} epochs")
+            if self.epochs_without_improvement >= early_stop_patience:
+                print(f"\nEarly stopping: No improvement for {early_stop_patience} epochs")
                 break
         
         # Training complete
@@ -371,10 +407,10 @@ class Trainer:
         print("Training Complete!")
         print("=" * 60)
         print(f"Total training time: {total_time / 60:.1f} minutes")
-        print(f"Best validation MAE: {self.best_val_mae:.4f}")
-        print(f"Final checkpoint saved to: {config.CHECKPOINTS_DIR}")
+        print(f"Best validation MAE: {self.best_val_mae:.2f}")
+        print(f"Checkpoint saved to: {CSRNET_CHECKPOINTS_DIR}")
         print(f"\nTo evaluate, run:")
-        print(f"  python evaluate.py")
+        print(f"  python evaluate_csrnet.py")
 
 
 def main():
@@ -383,41 +419,51 @@ def main():
     
     # Print configuration
     print("=" * 60)
-    print("LCDNet Training Configuration")
+    print("CSRNet Training Configuration")
     print("=" * 60)
-    print(f"Epochs: {args.epochs}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Learning rate: {args.lr}")
-    print(f"Device: {args.device}")
+    print(f"Epochs:           {args.epochs}")
+    print(f"Batch size:       {args.batch_size}")
+    print(f"Learning rate:    {args.lr}")
+    print(f"Weight decay:     {args.weight_decay}")
+    print(f"Count loss weight:{args.count_loss_weight}")
+    print(f"Device:           {args.device}")
+    print(f"Freeze frontend:  {args.freeze_frontend}")
     if args.resume:
-        print(f"Resume from: {args.resume}")
+        print(f"Resume from:      {args.resume}")
     print("=" * 60)
     
     # Check if data is ready
-    split_file = os.path.join(config.SPLITS_DIR, "train.txt")
+    from dataset_nwpu import NWPU_SPLITS_DIR
+    split_file = os.path.join(NWPU_SPLITS_DIR, "train.txt")
     if not os.path.exists(split_file):
         print(f"\nError: Training data not found!")
         print(f"Please run preprocessing first:")
-        print(f"  python preprocess.py")
+        print(f"  python preprocess_nwpu.py")
         sys.exit(1)
     
     # Create data loaders
     print("\nLoading datasets...")
-    train_loader, val_loader, test_loader = create_dataloaders(
+    train_loader, val_loader, _ = create_nwpu_dataloaders(
         batch_size=args.batch_size
     )
     
     # Create model
-    print("\nInitializing model...")
-    model = create_model(args.device)
-    print(f"Model parameters: {model.count_parameters():,}")
+    print("\nInitializing CSRNet model...")
+    model = create_csrnet(args.device, pretrained=True)
+    
+    # Optionally freeze frontend
+    if args.freeze_frontend:
+        print("Freezing VGG-16 frontend weights...")
+        model.freeze_frontend()
     
     # Create trainer
-    trainer = Trainer(
+    trainer = CSRNetTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         learning_rate=args.lr,
+        weight_decay=args.weight_decay,
+        count_loss_weight=args.count_loss_weight,
         device=args.device
     )
     

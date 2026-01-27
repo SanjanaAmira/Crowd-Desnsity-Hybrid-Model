@@ -1,30 +1,43 @@
-# LCDNet: Crowd Density Estimation on UCSD Dataset
+# Crowd Density Estimation: LCDNet + CSRNet
 
-A complete, thesis-ready pipeline for training and evaluating **LCDNet** (Lightweight Crowd Density Network) on the **UCSD Crowd Dataset** for crowd density estimation.
+A complete, thesis-ready pipeline for training and evaluating crowd density estimation models:
+- **LCDNet** (Lightweight Crowd Density Network) on **ShanghaiTech** for sparse scenes
+- **CSRNet** (Congested Scene Recognition Network) on **NWPU-Crowd** for dense scenes
 
 ## 📁 Project Structure
 
 ```
 LCDnet/
 ├── data/
-│   ├── raw/                    # Downloaded UCSD dataset
+│   ├── raw/                    # Downloaded ShanghaiTech dataset
 │   ├── density_maps/           # Generated density maps (.npy)
-│   └── splits/                 # Train/val/test split files
+│   ├── splits/                 # Train/val/test split files
+│   └── NWPU-Crowd/             # NWPU-Crowd dataset
+│       ├── images_part1-5/     # NWPU images
+│       ├── mats/               # Annotations (.mat files)
+│       ├── density_maps/       # Generated density maps
+│       └── splits/             # Processed split files
 ├── models/
 │   ├── __init__.py
-│   └── lcdnet.py              # LCDNet architecture
+│   ├── lcdnet.py              # LCDNet architecture (Phase 1)
+│   └── csrnet.py              # CSRNet architecture (Phase 2)
 ├── utils/
 │   ├── __init__.py
 │   ├── density_generator.py   # Gaussian kernel density map generation
 │   └── metrics.py             # MAE, MSE evaluation metrics
-├── checkpoints/               # Saved model checkpoints
+├── checkpoints/
+│   ├── best_model.pth         # LCDNet checkpoint
+│   └── csrnet/                # CSRNet checkpoints
 ├── logs/                      # Training logs and evaluation results
 ├── config.py                  # Hyperparameters and paths
-├── dataset.py                 # PyTorch Dataset class
-├── preprocess.py              # Dataset preprocessing script
-├── train.py                   # Training script
-├── evaluate.py                # Evaluation script
-├── requirements.txt           # Python dependencies
+├── dataset.py                 # ShanghaiTech Dataset class
+├── dataset_nwpu.py            # NWPU-Crowd Dataset class
+├── preprocess.py              # ShanghaiTech preprocessing
+├── preprocess_nwpu.py         # NWPU-Crowd preprocessing
+├── train.py                   # LCDNet training
+├── train_csrnet.py            # CSRNet training
+├── evaluate.py                # LCDNet evaluation
+├── evaluate_csrnet.py         # CSRNet evaluation
 └── README.md                  # This file
 ```
 
@@ -74,7 +87,53 @@ python evaluate.py --visualize  # Show sample predictions
 python evaluate.py --checkpoint checkpoints/best_model.pth
 ```
 
+---
+
+## 🚀 Phase 2: CSRNet on NWPU-Crowd (Dense Scenes)
+
+### 1. Preprocess NWPU-Crowd Dataset
+
+Make sure the NWPU-Crowd dataset is in `data/NWPU-Crowd/` with images, mats, and split files.
+
+```bash
+python preprocess_nwpu.py
+```
+
+This will:
+- Parse `.mat` annotation files to extract head positions
+- Generate density maps using Gaussian kernels
+- Create processed split files for training
+
+### 2. Train CSRNet
+
+```bash
+python train_csrnet.py
+```
+
+Training options:
+```bash
+python train_csrnet.py --epochs 100 --batch_size 4 --lr 1e-5
+python train_csrnet.py --freeze_frontend  # Train only backend (faster)
+python train_csrnet.py --resume checkpoints/csrnet/csrnet_epoch_50.pth
+```
+
+### 3. Evaluate CSRNet
+
+```bash
+python evaluate_csrnet.py
+```
+
+Evaluation options:
+```bash
+python evaluate_csrnet.py --visualize --num_samples 5
+python evaluate_csrnet.py --checkpoint checkpoints/csrnet/csrnet_best.pth
+```
+
+---
+
 ## 🏗️ Architecture
+
+### LCDNet (Lightweight - for Sparse Scenes)
 
 **LCDNet** uses an encoder-decoder architecture with:
 
@@ -92,6 +151,30 @@ Decoder: [256] → [128] → [64] → [32]
     ↓
 Output (1, 256, 256) - Density Map
 ```
+
+### CSRNet (Dense - for Congested Scenes)
+
+**CSRNet** uses a two-stage architecture designed for dense crowds:
+
+- **VGG-16 Frontend**: First 10 conv layers from pretrained VGG-16 for robust feature extraction
+- **Dilated Backend**: 6 dilated convolution layers with dilation rate 2 for enlarged receptive field
+- **Output**: 1/8 resolution density map (sum = estimated count)
+
+```
+Input (3, 384, 384)
+    ↓
+VGG-16 Frontend: conv1_1 → conv4_3 (3 max pools)
+    ↓
+Feature Maps (512, 48, 48)
+    ↓
+Dilated Backend: 512 → 512 → 512 → 256 → 128 → 64
+    ↓
+Output (1, 48, 48) - Density Map
+    ↓
+Sum pixels → Estimated Count
+```
+
+
 
 ## 📊 Metrics
 

@@ -1,21 +1,22 @@
 """
-Dataset Preprocessing Script for UCSD Crowd Density Estimation.
+Dataset Preprocessing Script for ShanghaiTech Crowd Counting.
 
 This script performs the following steps:
-1. Downloads the UCSD Anomaly Detection Dataset from Kaggle using kagglehub
-2. Explores the dataset structure to locate frames and annotations
-3. Parses ground truth annotations to extract head positions
-4. Generates density maps using Gaussian kernels
-5. Creates train/val/test splits
-6. Saves all preprocessed data
+1. Downloads the ShanghaiTech dataset from Kaggle using kagglehub
+2. Parses .mat annotation files to extract head positions
+3. Generates density maps using Gaussian kernels
+4. Creates train/val/test splits
+5. Saves all preprocessed data
+
+ShanghaiTech Dataset Structure:
+- Part_A: Dense crowds (avg 501 people per image)
+- Part_B: Sparse crowds (avg 123 people per image)
+
+Each image has a corresponding .mat file with 'image_info' containing
+head positions as (x, y) coordinates.
 
 Run this script before training:
     python preprocess.py
-
-After running, you should have:
-    - data/raw/: Original dataset files
-    - data/density_maps/: Generated density maps as .npy files
-    - data/splits/: train.txt, val.txt, test.txt split files
 
 Author: Thesis Implementation
 """
@@ -38,16 +39,13 @@ from utils.density_generator import generate_density_map
 
 def download_dataset():
     """
-    Download the UCSD Anomaly Detection Dataset from Kaggle.
-    
-    Uses kagglehub to download the dataset. The dataset contains pedestrian
-    video sequences with frame-level annotations.
+    Download the ShanghaiTech dataset from Kaggle.
     
     Returns:
         Path to the downloaded dataset directory.
     """
     print("=" * 60)
-    print("Step 1: Downloading UCSD Dataset from Kaggle")
+    print("Step 1: Downloading ShanghaiTech Dataset from Kaggle")
     print("=" * 60)
     
     try:
@@ -69,13 +67,7 @@ def download_dataset():
 
 def explore_dataset(dataset_path: str) -> dict:
     """
-    Explore the downloaded dataset structure.
-    
-    The UCSD dataset typically contains:
-    - UCSDped1 and UCSDped2 directories
-    - Train and Test subdirectories
-    - Frames as .tif images
-    - Ground truth annotations in various formats
+    Explore the downloaded ShanghaiTech dataset structure.
     
     Args:
         dataset_path: Path to the downloaded dataset.
@@ -88,328 +80,217 @@ def explore_dataset(dataset_path: str) -> dict:
     print("=" * 60)
     
     structure = {
-        'sequences': [],
-        'image_extensions': set(),
-        'annotation_files': [],
-        'total_frames': 0
+        'part_a_train': None,
+        'part_a_test': None,
+        'part_b_train': None,
+        'part_b_test': None,
+        'total_images': 0,
+        'total_annotations': 0
     }
     
-    # Walk through dataset directory
+    # Find Part_A and Part_B directories
     for root, dirs, files in os.walk(dataset_path):
+        # Count images and annotations
         for file in files:
-            filepath = os.path.join(root, file)
-            ext = os.path.splitext(file)[1].lower()
-            
-            # Track image files
-            if ext in ['.tif', '.tiff', '.png', '.jpg', '.jpeg', '.bmp']:
-                structure['image_extensions'].add(ext)
-                structure['total_frames'] += 1
-            
-            # Track annotation files
-            if ext in ['.mat', '.txt', '.csv', '.json', '.xml']:
-                structure['annotation_files'].append(filepath)
-            
-            # Track sequence directories
-            if 'UCSDped' in root and ext in ['.tif', '.tiff', '.png', '.jpg']:
-                seq_name = re.search(r'(UCSDped\d)', root)
-                if seq_name and seq_name.group(1) not in [s['name'] for s in structure['sequences']]:
-                    structure['sequences'].append({
-                        'name': seq_name.group(1),
-                        'path': root
-                    })
+            if file.endswith(('.jpg', '.jpeg', '.png')):
+                structure['total_images'] += 1
+            if file.endswith('.mat'):
+                structure['total_annotations'] += 1
+        
+        # Find specific directories
+        root_lower = root.lower().replace('\\', '/')
+        if 'part_a' in root_lower and 'train' in root_lower and 'images' in root_lower:
+            structure['part_a_train'] = os.path.dirname(root)
+        elif 'part_a' in root_lower and 'test' in root_lower and 'images' in root_lower:
+            structure['part_a_test'] = os.path.dirname(root)
+        elif 'part_b' in root_lower and 'train' in root_lower and 'images' in root_lower:
+            structure['part_b_train'] = os.path.dirname(root)
+        elif 'part_b' in root_lower and 'test' in root_lower and 'images' in root_lower:
+            structure['part_b_test'] = os.path.dirname(root)
     
-    # Print summary
     print(f"\nDataset structure:")
-    print(f"  Total frames found: {structure['total_frames']}")
-    print(f"  Image extensions: {structure['image_extensions']}")
-    print(f"  Annotation files: {len(structure['annotation_files'])}")
-    
-    if structure['sequences']:
-        print(f"  Sequences found:")
-        for seq in structure['sequences']:
-            print(f"    - {seq['name']}")
+    print(f"  Total images found: {structure['total_images']}")
+    print(f"  Total annotations: {structure['total_annotations']}")
+    print(f"  Part_A train: {'Found' if structure['part_a_train'] else 'Not found'}")
+    print(f"  Part_A test: {'Found' if structure['part_a_test'] else 'Not found'}")
+    print(f"  Part_B train: {'Found' if structure['part_b_train'] else 'Not found'}")
+    print(f"  Part_B test: {'Found' if structure['part_b_test'] else 'Not found'}")
     
     return structure
 
 
-def find_frames_and_annotations(dataset_path: str) -> list:
+def parse_mat_annotation(mat_path: str) -> np.ndarray:
     """
-    Find all frame images and their corresponding annotations.
+    Parse ShanghaiTech .mat annotation file for head positions.
     
-    The UCSD dataset may have annotations in different formats:
-    - .mat files with pixel-level annotations
-    - .txt files with person counts or positions
-    - Implicit annotations (frame count = person count)
-    
-    This function attempts to parse available annotations and falls back
-    to count estimation if position-level annotations aren't available.
-    
-    Args:
-        dataset_path: Path to the downloaded dataset.
-    
-    Returns:
-        List of dicts with 'image_path', 'points', and 'count' keys.
-    """
-    print("\n" + "=" * 60)
-    print("Step 3: Finding Frames and Annotations")
-    print("=" * 60)
-    
-    frames_data = []
-    
-    # Find all image files recursively
-    image_patterns = ['**/*.tif', '**/*.tiff', '**/*.png', '**/*.jpg', '**/*.jpeg']
-    image_files = []
-    
-    for pattern in image_patterns:
-        image_files.extend(glob.glob(os.path.join(dataset_path, pattern), recursive=True))
-    
-    print(f"Found {len(image_files)} image files")
-    
-    # Sort for reproducibility
-    image_files.sort()
-    
-    # Try to find and parse annotations
-    # The UCSD dataset structure typically includes annotations in .mat files
-    # or as part of the directory naming convention
-    
-    for img_path in tqdm(image_files, desc="Processing frames"):
-        frame_info = {
-            'image_path': img_path,
-            'points': [],
-            'count': 0
-        }
-        
-        # Try to find corresponding annotation file
-        # Common patterns: image001.tif -> image001.mat or annotation001.txt
-        base_name = os.path.splitext(os.path.basename(img_path))[0]
-        img_dir = os.path.dirname(img_path)
-        parent_dir = os.path.dirname(img_dir)
-        
-        # Check for .mat annotation file (UCSD format)
-        mat_patterns = [
-            os.path.join(img_dir, f"{base_name}.mat"),
-            os.path.join(img_dir, f"{base_name}_gt.mat"),
-            os.path.join(parent_dir, "gt", f"{base_name}.mat"),
-            os.path.join(parent_dir, f"{base_name}_gt.mat"),
-        ]
-        
-        annotation_found = False
-        for mat_path in mat_patterns:
-            if os.path.exists(mat_path):
-                try:
-                    points, count = parse_mat_annotation(mat_path)
-                    frame_info['points'] = points
-                    frame_info['count'] = count
-                    annotation_found = True
-                    break
-                except Exception as e:
-                    pass
-        
-        # Try ROI-based annotation parsing
-        if not annotation_found:
-            # Check for ground truth text files
-            gt_txt_patterns = [
-                os.path.join(img_dir, "..", "*gt*.txt"),
-                os.path.join(img_dir, "*gt*.txt"),
-                os.path.join(parent_dir, "*gt*.txt"),
-            ]
-            
-            for pattern in gt_txt_patterns:
-                gt_files = glob.glob(pattern)
-                for gt_file in gt_files:
-                    try:
-                        points, count = parse_txt_annotation(gt_file, base_name)
-                        if count > 0:
-                            frame_info['points'] = points
-                            frame_info['count'] = count
-                            annotation_found = True
-                            break
-                    except Exception:
-                        pass
-                if annotation_found:
-                    break
-        
-        # Fallback: estimate count from directory structure or use zero
-        # For UCSD, "normal" frames typically have 5-20 people
-        if not annotation_found:
-            # Use a default estimation based on typical UCSD pedestrian counts
-            # This is a fallback - ideally we'd have proper annotations
-            frame_info['count'] = estimate_count_from_path(img_path)
-            frame_info['points'] = generate_random_points(
-                frame_info['count'],
-                img_path
-            )
-        
-        frames_data.append(frame_info)
-    
-    # Print summary
-    annotated = sum(1 for f in frames_data if f['count'] > 0)
-    print(f"\nProcessed {len(frames_data)} frames")
-    print(f"  Frames with annotations: {annotated}")
-    print(f"  Average count: {np.mean([f['count'] for f in frames_data]):.1f}")
-    
-    return frames_data
-
-
-def parse_mat_annotation(mat_path: str) -> tuple:
-    """
-    Parse MATLAB annotation file for head positions.
-    
-    UCSD annotations may contain:
-    - 'frame' struct with pedestrian positions
-    - 'gt_frame' with ground truth
-    - Binary masks
+    ShanghaiTech annotations have structure:
+    - image_info[0,0]['location'][0,0] contains Nx2 array of (x, y) positions
     
     Args:
         mat_path: Path to .mat file.
     
     Returns:
-        Tuple of (points_array, count).
+        Numpy array of shape (N, 2) with head positions.
     """
     try:
         from scipy.io import loadmat
     except ImportError:
-        return [], 0
+        print("Error: scipy not installed for .mat file reading")
+        return np.array([]).reshape(0, 2)
     
     try:
         mat = loadmat(mat_path)
         
-        # Common keys in UCSD-style annotations
-        for key in ['frame', 'gt_frame', 'loc', 'locations', 'point_position', 'positions']:
-            if key in mat:
-                data = mat[key]
-                if isinstance(data, np.ndarray):
-                    if len(data.shape) >= 2 and data.shape[1] >= 2:
-                        points = data[:, :2]  # Take x, y coordinates
-                        return points, len(points)
+        # ShanghaiTech format: image_info -> location
+        if 'image_info' in mat:
+            # Navigate the nested structure
+            image_info = mat['image_info']
+            # image_info is typically (1,1) containing a struct
+            if image_info.shape == (1, 1):
+                inner = image_info[0, 0]
+                # Look for 'location' field
+                if 'location' in inner.dtype.names:
+                    locations = inner['location']
+                    if locations.shape == (1, 1):
+                        points = locations[0, 0]
+                        if len(points) > 0:
+                            return points.astype(np.float32)
         
-        # Check for count-only annotation
-        for key in ['count', 'num', 'n_people']:
-            if key in mat:
-                count = int(mat[key].flat[0])
-                return [], count
+        # Alternative format with 'annPoints'
+        if 'annPoints' in mat:
+            points = mat['annPoints']
+            if len(points) > 0:
+                return points.astype(np.float32)
         
+        # Try direct 'location' key
+        if 'location' in mat:
+            points = mat['location']
+            if len(points) > 0:
+                return points.astype(np.float32)
+        
+        # Try 'gt' key (another common format)
+        if 'gt' in mat:
+            points = mat['gt']
+            if len(points) > 0:
+                return points.astype(np.float32)
+                
     except Exception as e:
-        pass
+        print(f"Error parsing {mat_path}: {e}")
     
-    return [], 0
+    return np.array([]).reshape(0, 2)
 
 
-def parse_txt_annotation(txt_path: str, frame_name: str) -> tuple:
+def find_frames_and_annotations(dataset_path: str, use_part: str = 'B') -> list:
     """
-    Parse text-based annotation file.
+    Find all images and their corresponding annotations.
     
     Args:
-        txt_path: Path to .txt file.
-        frame_name: Name of the frame to find annotations for.
+        dataset_path: Path to the downloaded dataset.
+        use_part: 'A' for dense crowds, 'B' for sparse crowds, 'both' for all.
     
     Returns:
-        Tuple of (points_array, count).
+        List of dicts with 'image_path', 'points', 'count', and 'split' keys.
     """
-    try:
-        with open(txt_path, 'r') as f:
-            lines = f.readlines()
+    print("\n" + "=" * 60)
+    print(f"Step 3: Finding Frames and Annotations (Part {use_part})")
+    print("=" * 60)
+    
+    frames_data = []
+    
+    # Define search patterns based on selected part
+    search_dirs = []
+    
+    for root, dirs, files in os.walk(dataset_path):
+        root_lower = root.lower().replace('\\', '/')
         
-        # Try to find frame-specific annotation
-        for line in lines:
-            line = line.strip()
-            if frame_name in line:
-                # Try to parse numbers from line
-                numbers = re.findall(r'[-+]?\d*\.?\d+', line)
-                if len(numbers) >= 1:
-                    return [], int(float(numbers[-1]))
+        # Filter by part selection
+        if use_part.upper() == 'A':
+            if 'part_a' not in root_lower:
+                continue
+        elif use_part.upper() == 'B':
+            if 'part_b' not in root_lower:
+                continue
+        # else 'both' - don't filter
         
-        # If file contains just coordinates (one per line)
-        points = []
-        for line in lines:
-            parts = line.strip().split()
-            if len(parts) >= 2:
-                try:
-                    x, y = float(parts[0]), float(parts[1])
-                    points.append([x, y])
-                except ValueError:
-                    continue
+        # Find image directories
+        if 'images' in root_lower:
+            search_dirs.append(root)
+    
+    print(f"Found {len(search_dirs)} image directories to process")
+    
+    for img_dir in search_dirs:
+        # Determine if train or test split
+        is_train = 'train' in img_dir.lower()
+        split = 'train' if is_train else 'test'
         
-        if points:
-            return np.array(points), len(points)
+        # Find corresponding ground_truth directory
+        gt_dir = img_dir.replace('images', 'ground_truth').replace('images', 'ground-truth')
+        if not os.path.exists(gt_dir):
+            gt_dir = img_dir.replace('images', 'ground_truth')
+        if not os.path.exists(gt_dir):
+            # Try sibling directory
+            parent = os.path.dirname(img_dir)
+            gt_dir = os.path.join(parent, 'ground_truth')
+        if not os.path.exists(gt_dir):
+            gt_dir = os.path.join(parent, 'ground-truth')
         
-    except Exception:
-        pass
+        # Get all images in directory
+        image_files = []
+        for ext in ['*.jpg', '*.jpeg', '*.png']:
+            image_files.extend(glob.glob(os.path.join(img_dir, ext)))
+        
+        print(f"\n  Processing: {img_dir}")
+        print(f"  GT dir: {gt_dir}")
+        print(f"  Found {len(image_files)} images, split: {split}")
+        
+        for img_path in tqdm(image_files, desc=f"Processing {split}"):
+            # Find corresponding annotation
+            base_name = os.path.splitext(os.path.basename(img_path))[0]
+            
+            # ShanghaiTech naming: IMG_1.jpg -> GT_IMG_1.mat
+            mat_patterns = [
+                os.path.join(gt_dir, f"GT_{base_name}.mat"),
+                os.path.join(gt_dir, f"{base_name}.mat"),
+                os.path.join(gt_dir, f"GT_{base_name.upper()}.mat"),
+            ]
+            
+            points = np.array([]).reshape(0, 2)
+            for mat_path in mat_patterns:
+                if os.path.exists(mat_path):
+                    points = parse_mat_annotation(mat_path)
+                    break
+            
+            frame_info = {
+                'image_path': img_path,
+                'points': points,
+                'count': len(points),
+                'split': split
+            }
+            
+            frames_data.append(frame_info)
     
-    return [], 0
-
-
-def estimate_count_from_path(img_path: str) -> int:
-    """
-    Estimate pedestrian count based on image path.
+    # Print summary
+    train_count = sum(1 for f in frames_data if f['split'] == 'train')
+    test_count = sum(1 for f in frames_data if f['split'] == 'test')
+    annotated = sum(1 for f in frames_data if f['count'] > 0)
     
-    For UCSD dataset:
-    - Training data typically has normal pedestrian flow
-    - Test data may include anomalies (not relevant for counting)
+    print(f"\n\nProcessed {len(frames_data)} frames")
+    print(f"  Train: {train_count}")
+    print(f"  Test: {test_count}")
+    print(f"  With annotations: {annotated}")
+    if annotated > 0:
+        avg_count = np.mean([f['count'] for f in frames_data if f['count'] > 0])
+        print(f"  Average count: {avg_count:.1f}")
     
-    This is a fallback when proper annotations aren't available.
-    
-    Args:
-        img_path: Path to the image file.
-    
-    Returns:
-        Estimated count (integer).
-    """
-    # UCSD pedestrian dataset typically has 5-25 people in normal frames
-    # Use a random value in this range for data augmentation purposes
-    path_lower = img_path.lower()
-    
-    if 'train' in path_lower:
-        return random.randint(8, 20)
-    elif 'test' in path_lower:
-        return random.randint(5, 25)
-    else:
-        return random.randint(8, 18)
-
-
-def generate_random_points(count: int, img_path: str) -> np.ndarray:
-    """
-    Generate random point positions when annotations aren't available.
-    
-    Points are distributed in the walkable region of the image.
-    UCSD images are 238x158 (ped1) or 360x240 (ped2).
-    
-    Args:
-        count: Number of points to generate.
-        img_path: Path to image for dimension extraction.
-    
-    Returns:
-        Array of shape (count, 2) with x, y coordinates.
-    """
-    if count == 0:
-        return np.array([]).reshape(0, 2)
-    
-    try:
-        img = Image.open(img_path)
-        width, height = img.size
-    except:
-        width, height = 238, 158  # Default UCSD dimensions
-    
-    # Generate points in the central walking region
-    margin_x = width * 0.1
-    margin_y = height * 0.2
-    
-    points = np.random.rand(count, 2)
-    points[:, 0] = points[:, 0] * (width - 2 * margin_x) + margin_x
-    points[:, 1] = points[:, 1] * (height - 2 * margin_y) + margin_y
-    
-    return points
+    return frames_data
 
 
 def generate_density_maps(frames_data: list):
     """
     Generate density maps for all frames and save as .npy files.
     
-    Each density map is saved with the same base name as the source image.
-    The sum of each density map equals the ground truth count.
-    
     Args:
-        frames_data: List of frame info dicts from find_frames_and_annotations.
+        frames_data: List of frame info dicts.
     
     Returns:
         Updated frames_data with 'density_path' added.
@@ -420,6 +301,8 @@ def generate_density_maps(frames_data: list):
     
     os.makedirs(config.DENSITY_MAPS_DIR, exist_ok=True)
     
+    valid_frames = []
+    
     for frame in tqdm(frames_data, desc="Generating density maps"):
         img_path = frame['image_path']
         points = frame['points']
@@ -427,45 +310,43 @@ def generate_density_maps(frames_data: list):
         # Load image to get dimensions
         try:
             img = Image.open(img_path)
-            height, width = img.size[1], img.size[0]  # PIL is (W, H)
+            width, height = img.size  # PIL is (W, H)
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
             continue
         
-        # Convert points to numpy array
-        if isinstance(points, list):
-            points = np.array(points).reshape(-1, 2) if len(points) > 0 else np.array([]).reshape(0, 2)
+        # Skip frames without annotations
+        if len(points) == 0:
+            continue
         
         # Generate density map
-        if len(points) > 0:
-            density_map = generate_density_map((height, width), points)
-        else:
-            density_map = np.zeros((height, width), dtype=np.float32)
+        density_map = generate_density_map((height, width), points)
         
-        # Create unique filename based on image path
-        # Replace path separators to create flat structure
-        rel_path = os.path.relpath(img_path, config.RAW_DATA_DIR)
-        safe_name = rel_path.replace(os.sep, '_').replace('/', '_')
-        base_name = os.path.splitext(safe_name)[0]
-        density_path = os.path.join(config.DENSITY_MAPS_DIR, f"{base_name}.npy")
+        # Create unique filename
+        base_name = os.path.splitext(os.path.basename(img_path))[0]
+        # Add random suffix to avoid name collisions
+        unique_id = hash(img_path) % 100000
+        density_path = os.path.join(config.DENSITY_MAPS_DIR, f"{base_name}_{unique_id}.npy")
         
         # Save density map
         np.save(density_path, density_map)
         
         # Update frame info
         frame['density_path'] = density_path
+        valid_frames.append(frame)
     
-    print(f"\nSaved density maps to: {config.DENSITY_MAPS_DIR}")
+    print(f"\nGenerated {len(valid_frames)} density maps")
+    print(f"Saved to: {config.DENSITY_MAPS_DIR}")
     
-    return frames_data
+    return valid_frames
 
 
 def create_splits(frames_data: list):
     """
     Create train/val/test splits and save split files.
     
-    Each split file contains lines with format:
-        image_path,density_path,count
+    ShanghaiTech already has train/test split.
+    We'll create val split from training data.
     
     Args:
         frames_data: List of frame info dicts with density_path added.
@@ -479,19 +360,15 @@ def create_splits(frames_data: list):
     # Set random seed for reproducibility
     random.seed(config.RANDOM_SEED)
     
-    # Shuffle data
-    frames_shuffled = frames_data.copy()
-    random.shuffle(frames_shuffled)
+    # Separate existing train and test
+    train_data = [f for f in frames_data if f['split'] == 'train' and 'density_path' in f]
+    test_data = [f for f in frames_data if f['split'] == 'test' and 'density_path' in f]
     
-    # Calculate split indices
-    n_total = len(frames_shuffled)
-    n_train = int(n_total * config.TRAIN_RATIO)
-    n_val = int(n_total * config.VAL_RATIO)
-    
-    # Split data
-    train_data = frames_shuffled[:n_train]
-    val_data = frames_shuffled[n_train:n_train + n_val]
-    test_data = frames_shuffled[n_train + n_val:]
+    # Create validation split from training data (15%)
+    random.shuffle(train_data)
+    val_size = int(len(train_data) * 0.15)
+    val_data = train_data[:val_size]
+    train_data = train_data[val_size:]
     
     # Save split files
     splits = {
@@ -504,18 +381,14 @@ def create_splits(frames_data: list):
         split_path = os.path.join(config.SPLITS_DIR, f"{split_name}.txt")
         with open(split_path, 'w') as f:
             for frame in split_data:
-                if 'density_path' not in frame:
-                    continue
                 line = f"{frame['image_path']},{frame['density_path']},{frame['count']}\n"
                 f.write(line)
         print(f"  {split_name}: {len(split_data)} samples -> {split_path}")
-    
-    print(f"\nSplit ratios: Train={config.TRAIN_RATIO}, Val={config.VAL_RATIO}, Test={config.TEST_RATIO}")
 
 
 def copy_dataset_to_local(dataset_path: str):
     """
-    Copy downloaded dataset to local data directory for easier access.
+    Copy downloaded dataset to local data directory.
     
     Args:
         dataset_path: Path to downloaded dataset.
@@ -526,38 +399,22 @@ def copy_dataset_to_local(dataset_path: str):
     
     os.makedirs(config.RAW_DATA_DIR, exist_ok=True)
     
-    # Copy all files
-    for item in os.listdir(dataset_path):
-        src = os.path.join(dataset_path, item)
-        dst = os.path.join(config.RAW_DATA_DIR, item)
-        
-        if os.path.exists(dst):
-            print(f"  Skipping (exists): {item}")
-            continue
-        
-        if os.path.isdir(src):
-            shutil.copytree(src, dst)
-            print(f"  Copied directory: {item}")
-        else:
-            shutil.copy2(src, dst)
-            print(f"  Copied file: {item}")
+    # Just create a symlink or reference instead of copying everything
+    # (ShanghaiTech can be large)
+    ref_file = os.path.join(config.RAW_DATA_DIR, "dataset_path.txt")
+    with open(ref_file, 'w') as f:
+        f.write(dataset_path)
     
-    print(f"\nDataset available at: {config.RAW_DATA_DIR}")
+    print(f"Dataset reference saved to: {ref_file}")
+    print(f"Original dataset at: {dataset_path}")
 
 
 def main():
     """
-    Main preprocessing pipeline.
-    
-    Runs all preprocessing steps in sequence:
-    1. Download dataset
-    2. Explore structure
-    3. Find frames and annotations
-    4. Generate density maps
-    5. Create train/val/test splits
+    Main preprocessing pipeline for ShanghaiTech dataset.
     """
     print("=" * 60)
-    print("UCSD Crowd Dataset Preprocessing Pipeline")
+    print("ShanghaiTech Dataset Preprocessing Pipeline")
     print("=" * 60)
     print(f"\nProject root: {config.PROJECT_ROOT}")
     print(f"Random seed: {config.RANDOM_SEED}")
@@ -568,22 +425,22 @@ def main():
     # Step 1: Download dataset
     dataset_path = download_dataset()
     
-    # Copy to local directory
+    # Save reference
     copy_dataset_to_local(dataset_path)
-    
-    # Use local path for subsequent steps
-    dataset_path = config.RAW_DATA_DIR
     
     # Step 2: Explore dataset structure
     structure = explore_dataset(dataset_path)
     
-    if structure['total_frames'] == 0:
-        print("\nError: No image frames found in dataset!")
-        print("Please check the dataset path and structure.")
-        sys.exit(1)
-    
     # Step 3: Find frames and parse annotations
-    frames_data = find_frames_and_annotations(dataset_path)
+    # Use Part B (sparse crowds) - more suitable for LCDNet
+    # Part A has very dense crowds (500+ people) which may be too challenging
+    frames_data = find_frames_and_annotations(dataset_path, use_part='B')
+    
+    if len(frames_data) == 0:
+        print("\nError: No frames found!")
+        # Try Part A as fallback
+        print("Trying Part A...")
+        frames_data = find_frames_and_annotations(dataset_path, use_part='A')
     
     if len(frames_data) == 0:
         print("\nError: No frames processed!")
@@ -591,6 +448,10 @@ def main():
     
     # Step 4: Generate density maps
     frames_data = generate_density_maps(frames_data)
+    
+    if len(frames_data) == 0:
+        print("\nError: No density maps generated!")
+        sys.exit(1)
     
     # Step 5: Create splits
     create_splits(frames_data)
@@ -600,12 +461,11 @@ def main():
     print("Preprocessing Complete!")
     print("=" * 60)
     print(f"\nOutput directories:")
-    print(f"  Raw data: {config.RAW_DATA_DIR}")
     print(f"  Density maps: {config.DENSITY_MAPS_DIR}")
     print(f"  Split files: {config.SPLITS_DIR}")
     print(f"\nTotal frames processed: {len(frames_data)}")
     print(f"\nNext step: Run training with")
-    print("  python train.py")
+    print("  python train.py --epochs 25")
 
 
 if __name__ == "__main__":

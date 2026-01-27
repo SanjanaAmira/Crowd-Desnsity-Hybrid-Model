@@ -30,8 +30,9 @@ LOGS_DIR = os.path.join(PROJECT_ROOT, "logs")
 # DATASET CONFIGURATION
 # ============================================================================
 
-# Kaggle dataset identifier for UCSD Anomaly Detection Dataset
-KAGGLE_DATASET = "karthiknm1/ucsd-anomaly-detection-dataset"
+# Kaggle dataset identifier for ShanghaiTech Crowd Counting Dataset
+# This dataset has proper head position annotations in .mat files
+KAGGLE_DATASET = "tthien/shanghaitech"
 
 # Train/Validation/Test split ratios (must sum to 1.0)
 TRAIN_RATIO = 0.70
@@ -46,8 +47,8 @@ RANDOM_SEED = 42
 # ============================================================================
 
 # Target image size for training (height, width)
-# Smaller sizes use less memory but may lose detail
-IMAGE_SIZE = (256, 256)
+# Larger sizes preserve more detail for dense crowds
+IMAGE_SIZE = (384, 384)
 
 # ImageNet normalization statistics (standard for pretrained backbones)
 # Even without pretrained weights, this normalization is commonly used
@@ -80,7 +81,8 @@ K_NEAREST_NEIGHBORS = 3
 
 # LCDNet configuration
 # Number of initial filters (doubled at each encoder stage)
-INITIAL_FILTERS = 32
+# Increased for ShanghaiTech dense crowds
+INITIAL_FILTERS = 64
 
 # Number of encoder/decoder stages
 NUM_STAGES = 4
@@ -107,10 +109,11 @@ WEIGHT_DECAY = 1e-5
 # Learning rate scheduler parameters
 # Reduce LR by factor when validation loss plateaus
 LR_SCHEDULER_FACTOR = 0.5
-LR_SCHEDULER_PATIENCE = 10
+LR_SCHEDULER_PATIENCE = 15
 
 # Early stopping patience (stop if no improvement for this many epochs)
-EARLY_STOPPING_PATIENCE = 20
+# Increased to allow more exploration
+EARLY_STOPPING_PATIENCE = 50
 
 # How often to print training progress (in batches)
 LOG_INTERVAL = 10
