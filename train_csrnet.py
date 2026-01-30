@@ -325,13 +325,15 @@ class CSRNetTrainer:
         
         print(f"Resumed from epoch {self.current_epoch} with best MAE: {self.best_val_mae:.4f}")
     
-    def train(self, num_epochs: int, resume_path: str = None):
+    def train(self, num_epochs: int, resume_path: str = None, new_lr: float = None, new_count_weight: float = None):
         """
         Main training loop.
         
         Args:
             num_epochs: Total number of epochs to train.
             resume_path: Path to checkpoint to resume from.
+            new_lr: Optional new learning rate to override the one in checkpoint.
+            new_count_weight: Optional new count loss weight to override.
         """
         print("\n" + "=" * 60)
         print("Starting CSRNet Training on NWPU-Crowd")
@@ -341,18 +343,23 @@ class CSRNetTrainer:
         print(f"Batch size: {self.train_loader.batch_size}")
         print(f"Training samples: {len(self.train_loader.dataset)}")
         print(f"Validation samples: {len(self.val_loader.dataset)}")
-        print(f"Count loss weight: {self.count_loss_weight}")
-        
-        # Count parameters
-        total_params = sum(p.numel() for p in self.model.parameters())
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        print(f"Total parameters: {total_params:,}")
-        print(f"Trainable parameters: {trainable_params:,}")
-        print("=" * 60)
         
         # Resume if checkpoint provided
         if resume_path and os.path.exists(resume_path):
             self.load_checkpoint(resume_path)
+            
+        # Override hyperparameters if requested
+        if new_lr is not None:
+            print(f"Overriding learning rate to: {new_lr:.2e}")
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = new_lr
+        
+        if new_count_weight is not None:
+            print(f"Overriding count loss weight to: {new_count_weight}")
+            self.count_loss_weight = new_count_weight
+
+        print(f"Current LR: {self.optimizer.param_groups[0]['lr']:.2e}")
+        print(f"Count loss weight: {self.count_loss_weight}")
         
         start_time = time.time()
         early_stop_patience = 25
@@ -470,7 +477,9 @@ def main():
     # Train
     trainer.train(
         num_epochs=args.epochs,
-        resume_path=args.resume
+        resume_path=args.resume,
+        new_lr=args.lr if args.resume else None,
+        new_count_weight=args.count_loss_weight if args.resume else None
     )
 
 
