@@ -77,11 +77,19 @@ ROUTER_CHECKPOINT_DIR = os.path.join(config.CHECKPOINTS_DIR, "router")
 # Router best model path
 ROUTER_BEST_PATH = os.path.join(ROUTER_CHECKPOINT_DIR, "router_best.pth")
 
-# LCDNet checkpoint path (trained on ShanghaiTech)
-LCDNET_CHECKPOINT = os.path.join(config.CHECKPOINTS_DIR, "best_model.pth")
+# LCDNet checkpoint path (fine-tuned on NWPU-Crowd sparse if available, else ShanghaiTech)
+LCDNET_CHECKPOINT = os.path.join(config.CHECKPOINTS_DIR, "best_model_nwpu_sparse.pth")
+if not os.path.exists(LCDNET_CHECKPOINT):
+    LCDNET_CHECKPOINT = os.path.join(config.CHECKPOINTS_DIR, "best_model.pth")
 
 # CSRNet checkpoint path (trained on NWPU-Crowd)
 CSRNET_CHECKPOINT = os.path.join(config.CHECKPOINTS_DIR, "csrnet", "csrnet_best.pth")
+
+# Dense model configuration (Stage 2: MobileCount vs CSRNet)
+DENSE_MODEL_TYPE = "mobilecount"  # "csrnet" or "mobilecount"
+DENSE_CHECKPOINT = os.path.join(config.CHECKPOINTS_DIR, "mobilecount_best.pth")
+if not os.path.exists(DENSE_CHECKPOINT):
+    DENSE_CHECKPOINT = CSRNET_CHECKPOINT
 
 # ============================================================================
 # DATASET PATHS (NWPU-Crowd)
@@ -145,7 +153,10 @@ def get_routing_label(gt_count: float) -> int:
 
 def get_model_name(label: int) -> str:
     """Get model name from routing label."""
-    return "LCDNet" if label == 0 else "CSRNet"
+    if label == 0:
+        return "LCDNet"
+    else:
+        return "MobileCount" if DENSE_MODEL_TYPE == "mobilecount" else "CSRNet"
 
 
 if __name__ == "__main__":
@@ -156,5 +167,7 @@ if __name__ == "__main__":
     print(f"Device: {DEVICE}")
     print(f"LCDNet Checkpoint: {LCDNET_CHECKPOINT}")
     print(f"CSRNet Checkpoint: {CSRNET_CHECKPOINT}")
+    print(f"Dense Model Type:  {DENSE_MODEL_TYPE}")
+    print(f"Dense Checkpoint:   {DENSE_CHECKPOINT}")
     print("=" * 50)
     create_routing_directories()

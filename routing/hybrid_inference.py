@@ -44,6 +44,7 @@ from routing.router import load_router
 # Import density estimation models
 from models.lcdnet import LCDNet
 from models.csrnet import CSRNet
+from models.mobilecount import MobileCount
 import config
 
 
@@ -69,8 +70,9 @@ class HybridDensityEstimator:
         self,
         router_path: str = None,
         lcdnet_path: str = None,
-        csrnet_path: str = None,
-        device: str = None
+        csrnet_path: str = None,  # Backward compatible parameter name for dense path
+        device: str = None,
+        dense_model_type: str = None
     ):
         """
         Initialize the hybrid estimator.
@@ -78,19 +80,23 @@ class HybridDensityEstimator:
         Args:
             router_path: Path to router checkpoint. Uses config default if None.
             lcdnet_path: Path to LCDNet checkpoint. Uses config default if None.
-            csrnet_path: Path to CSRNet checkpoint. Uses config default if None.
+            csrnet_path: Path to dense model checkpoint. Uses config default if None.
             device: Computation device. Uses config default if None.
+            dense_model_type: Dense model type ('csrnet' or 'mobilecount'). Uses config default if None.
         """
         if router_path is None:
             router_path = config_routing.ROUTER_BEST_PATH
         if lcdnet_path is None:
             lcdnet_path = config_routing.LCDNET_CHECKPOINT
         if csrnet_path is None:
-            csrnet_path = config_routing.CSRNET_CHECKPOINT
+            csrnet_path = config_routing.DENSE_CHECKPOINT
         if device is None:
             device = config_routing.DEVICE
+        if dense_model_type is None:
+            dense_model_type = getattr(config_routing, 'DENSE_MODEL_TYPE', 'csrnet')
         
         self.device = device
+        self.dense_model_type = dense_model_type.lower()
         
         print("Loading Hybrid Density Estimator...")
         print("=" * 50)
@@ -103,9 +109,9 @@ class HybridDensityEstimator:
         print("[2/3] Loading LCDNet...")
         self.lcdnet = self._load_lcdnet(lcdnet_path)
         
-        # Load CSRNet (dense scenes)
-        print("[3/3] Loading CSRNet...")
-        self.csrnet = self._load_csrnet(csrnet_path)
+        # Load Dense Model (CSRNet or MobileCount)
+        print(f"[3/3] Loading Dense Model ({self.dense_model_type.upper()})...")
+        self.dense_model = self._load_dense_model(csrnet_path)
         
         # Image transforms
         self._build_transforms()
@@ -143,9 +149,13 @@ class HybridDensityEstimator:
         print(f"  LCDNet loaded from: {path}")
         return model
     
-    def _load_csrnet(self, path: str):
-        """Load and freeze CSRNet."""
-        model = CSRNet(pretrained=False)
+    def _load_dense_model(self, path: str):
+        """Load and freeze the dense crowd counter model (CSRNet or MobileCount)."""
+        if self.dense_model_type == "mobilecount":
+            model = MobileCount(pretrained=False)
+        else:
+            model = CSRNet(pretrained=False)
+            
         checkpoint = torch.load(path, map_location=self.device)
         
         # Handle different checkpoint formats
@@ -161,7 +171,7 @@ class HybridDensityEstimator:
         for param in model.parameters():
             param.requires_grad = False
         
-        print(f"  CSRNet loaded from: {path}")
+        print(f"  Dense model ({self.dense_model_type.upper()}) loaded from: {path}")
         return model
     
     def _build_transforms(self):
@@ -248,9 +258,9 @@ class HybridDensityEstimator:
                     density_map = self.lcdnet(density_input)
                     model_name = "LCDNet"
                 else:
-                    # Dense scene -> CSRNet
-                    density_map = self.csrnet(density_input)
-                    model_name = "CSRNet"
+                    # Dense scene -> MobileCount / CSRNet
+                    density_map = self.dense_model(density_input)
+                    model_name = "MobileCount" if self.dense_model_type == "mobilecount" else "CSRNet"
                 count = density_map.sum().item()
                 
             elif mode == "soft":
@@ -261,19 +271,19 @@ class HybridDensityEstimator:
                         model_name = "LCDNet (Hard)"
                         count = density_map.sum().item()
                     elif p_csr >= 1.0 - soft_margin:
-                        density_map = self.csrnet(density_input)
-                        model_name = "CSRNet (Hard)"
+                        density_map = self.dense_model(density_input)
+                        model_name = "MobileCount (Hard)" if self.dense_model_type == "mobilecount" else "CSRNet (Hard)"
                         count = density_map.sum().item()
                 
                 # If confidence is intermediate, run both and fuse
                 if density_map is None:
                     lcd_density = self.lcdnet(density_input)
-                    csr_density = self.csrnet(density_input)
+                    csr_density = self.dense_model(density_input)
                     
-                    # Get CSRNet predicted count
+                    # Get dense model predicted count
                     csr_sum = csr_density.sum().item()
                     
-                    # Upsample CSRNet density map to match LCDNet's 384x384 resolution
+                    # Upsample dense model density map to match LCDNet's 384x384 resolution
                     upsampled_csr = F.interpolate(
                         csr_density,
                         size=lcd_density.shape[-2:],
@@ -286,7 +296,7 @@ class HybridDensityEstimator:
                     if upsampled_sum > 0:
                         upsampled_csr = upsampled_csr * (csr_sum / upsampled_sum)
                     
-                    # Perform fusion: alpha * LCDNet + beta * CSRNet
+                    # Perform fusion: alpha * LCDNet + beta * dense model
                     density_map = p_lcd * lcd_density + p_csr * upsampled_csr
                     model_name = "Fusion"
                     count = density_map.sum().item()

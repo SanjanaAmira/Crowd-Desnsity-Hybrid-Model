@@ -44,6 +44,7 @@ from routing.hybrid_inference import HybridDensityEstimator
 # Import models directly for single-model evaluation
 from models.lcdnet import LCDNet
 from models.csrnet import CSRNet
+from models.mobilecount import MobileCount
 from torchvision import transforms
 import config
 
@@ -60,6 +61,8 @@ class SingleModelEvaluator:
             self.model = LCDNet()
         elif model_name.lower() == "csrnet":
             self.model = CSRNet(pretrained=False)
+        elif model_name.lower() == "mobilecount":
+            self.model = MobileCount(pretrained=False)
         else:
             raise ValueError(f"Unknown model: {model_name}")
         
@@ -381,6 +384,16 @@ def main():
         results.append(csrnet_result)
     except Exception as e:
         print(f"Warning: Could not evaluate CSRNet: {e}")
+    
+    # Evaluate MobileCount-only
+    if getattr(config_routing, 'DENSE_MODEL_TYPE', '') == "mobilecount":
+        try:
+            mobilecount_result = evaluate_single_model(
+                samples, "MobileCount", config_routing.DENSE_CHECKPOINT, device
+            )
+            results.append(mobilecount_result)
+        except Exception as e:
+            print(f"Warning: Could not evaluate MobileCount: {e}")
     
     # Evaluate Hybrid (Hard Routing)
     try:
