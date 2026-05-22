@@ -209,7 +209,9 @@ def evaluate_single_model(
 
 def evaluate_hybrid(
     samples: List[Tuple[str, float]],
-    estimator: HybridDensityEstimator
+    estimator: HybridDensityEstimator,
+    mode: str = "hard",
+    soft_margin: float = 0.05
 ) -> Dict:
     """Evaluate hybrid system on all samples."""
     errors = []
@@ -217,10 +219,12 @@ def evaluate_hybrid(
     predictions = []
     routing_stats = defaultdict(int)
     
-    print("\nEvaluating Hybrid...")
-    for img_path, gt_count in tqdm(samples, desc="Hybrid"):
+    model_label = "Hybrid-Hard" if mode == "hard" else "Hybrid-Soft"
+    
+    print(f"\nEvaluating {model_label}...")
+    for img_path, gt_count in tqdm(samples, desc=model_label):
         image = Image.open(img_path).convert('RGB')
-        result = estimator.predict(image)
+        result = estimator.predict(image, mode=mode, soft_margin=soft_margin)
         
         pred_count = result['count']
         elapsed = result['total_time']
@@ -251,7 +255,7 @@ def evaluate_hybrid(
     routing_pct = {k: 100 * v / total for k, v in routing_stats.items()}
     
     return {
-        'model': 'Hybrid',
+        'model': model_label,
         'mae': mae,
         'mse': mse,
         'rmse': rmse,
@@ -287,12 +291,12 @@ def print_results(results: List[Dict], output_file: str = None):
     lines.append("-" * 70)
     
     # Hybrid routing statistics
-    hybrid_result = next((r for r in results if r['model'] == 'Hybrid'), None)
-    if hybrid_result and 'routing_pct' in hybrid_result:
-        lines.append("\nRouting Statistics (Hybrid):")
-        for model, pct in hybrid_result['routing_pct'].items():
-            count = hybrid_result['routing_stats'][model]
-            lines.append(f"  {model}: {count} images ({pct:.1f}%)")
+    for r in results:
+        if r['model'].startswith('Hybrid') and 'routing_pct' in r:
+            lines.append(f"\nRouting Statistics ({r['model']}):")
+            for model, pct in r['routing_pct'].items():
+                count = r['routing_stats'][model]
+                lines.append(f"  {model}: {count} images ({pct:.1f}%)")
     
     lines.append("")
     lines.append(header)
@@ -308,18 +312,19 @@ def print_results(results: List[Dict], output_file: str = None):
             f.write(output)
             
             # Add per-sample details
-            f.write("\n\n" + "=" * 70 + "\n")
-            f.write("PER-SAMPLE RESULTS (HYBRID)\n")
-            f.write("=" * 70 + "\n\n")
-            
-            if hybrid_result:
-                f.write(f"{'Image':<20} {'GT':>8} {'Pred':>8} {'Error':>8} {'Model':>10}\n")
-                f.write("-" * 60 + "\n")
-                
-                for pred in hybrid_result['predictions'][:100]:  # First 100
-                    img_name = os.path.basename(pred['path'])[:18]
-                    f.write(f"{img_name:<20} {pred['gt']:>8.1f} {pred['pred']:>8.1f} "
-                           f"{pred['error']:>8.2f} {pred['model']:>10}\n")
+            for r in results:
+                if r['model'].startswith('Hybrid'):
+                    f.write("\n\n" + "=" * 70 + "\n")
+                    f.write(f"PER-SAMPLE RESULTS ({r['model'].upper()})\n")
+                    f.write("=" * 70 + "\n\n")
+                    
+                    f.write(f"{'Image':<20} {'GT':>8} {'Pred':>8} {'Error':>8} {'Model':>15}\n")
+                    f.write("-" * 65 + "\n")
+                    
+                    for pred in r['predictions'][:100]:  # First 100
+                        img_name = os.path.basename(pred['path'])[:18]
+                        f.write(f"{img_name:<20} {pred['gt']:>8.1f} {pred['pred']:>8.1f} "
+                               f"{pred['error']:>8.2f} {pred['model']:>15}\n")
         
         print(f"\nResults saved to: {output_file}")
 
@@ -377,13 +382,23 @@ def main():
     except Exception as e:
         print(f"Warning: Could not evaluate CSRNet: {e}")
     
-    # Evaluate Hybrid
+    # Evaluate Hybrid (Hard Routing)
     try:
         estimator = HybridDensityEstimator(device=device)
-        hybrid_result = evaluate_hybrid(samples, estimator)
-        results.append(hybrid_result)
+        hybrid_hard_result = evaluate_hybrid(samples, estimator, mode="hard")
+        results.append(hybrid_hard_result)
     except Exception as e:
-        print(f"Warning: Could not evaluate Hybrid: {e}")
+        print(f"Warning: Could not evaluate Hybrid Hard: {e}")
+        import traceback
+        traceback.print_exc()
+        
+    # Evaluate Hybrid (Soft Routing / Fusion)
+    try:
+        estimator = HybridDensityEstimator(device=device)
+        hybrid_soft_result = evaluate_hybrid(samples, estimator, mode="soft", soft_margin=0.05)
+        results.append(hybrid_soft_result)
+    except Exception as e:
+        print(f"Warning: Could not evaluate Hybrid Soft: {e}")
         import traceback
         traceback.print_exc()
     

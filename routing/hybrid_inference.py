@@ -189,7 +189,9 @@ class HybridDensityEstimator:
     def predict(
         self,
         image: Image.Image,
-        return_density_map: bool = False
+        return_density_map: bool = False,
+        mode: str = "hard",
+        soft_margin: float = 0.05
     ) -> Dict[str, Any]:
         """
         Predict crowd count for a single image using hybrid routing.
@@ -197,12 +199,18 @@ class HybridDensityEstimator:
         Args:
             image: PIL Image (RGB).
             return_density_map: Whether to return the density map.
+            mode: Routing mode, either "hard" or "soft".
+                  - "hard": Classic single-model routing.
+                  - "soft": Confidence-aware soft routing and density map fusion.
+            soft_margin: Probability threshold margin. If router confidence is above 1 - soft_margin
+                         (e.g., 0.95), we bypass the other model to save compute.
         
         Returns:
             Dictionary containing:
             - 'count': Predicted person count.
-            - 'model': Model used ('LCDNet' or 'CSRNet').
+            - 'model': Model used ('LCDNet', 'CSRNet', 'LCDNet (Hard)', 'CSRNet (Hard)', or 'Fusion').
             - 'routing_prob': Router confidence for the chosen model.
+            - 'probs': Full probability distribution dictionary for LCDNet and CSRNet.
             - 'router_time': Time spent on routing (seconds).
             - 'density_time': Time spent on density estimation (seconds).
             - 'total_time': Total inference time (seconds).
@@ -218,6 +226,9 @@ class HybridDensityEstimator:
         with torch.no_grad():
             router_logits = self.router(router_input)
             router_probs = F.softmax(router_logits, dim=1)
+            p_lcd = router_probs[0, 0].item()
+            p_csr = router_probs[0, 1].item()
+            
             route_decision = torch.argmax(router_probs, dim=1).item()
             routing_confidence = router_probs[0, route_decision].item()
         router_time = time.time() - router_start
@@ -225,21 +236,64 @@ class HybridDensityEstimator:
         # Prepare image for density model
         density_input = self.density_transform(image).unsqueeze(0).to(self.device)
         
-        # Run selected density model
+        # Run density estimation
         density_start = time.time()
-        with torch.no_grad():
-            if route_decision == 0:
-                # Sparse scene -> LCDNet
-                density_map = self.lcdnet(density_input)
-                model_name = "LCDNet"
-            else:
-                # Dense scene -> CSRNet
-                density_map = self.csrnet(density_input)
-                model_name = "CSRNet"
-        density_time = time.time() - density_start
+        density_map = None
+        model_name = ""
         
-        # Compute count from density map
-        count = density_map.sum().item()
+        with torch.no_grad():
+            if mode == "hard":
+                if route_decision == 0:
+                    # Sparse scene -> LCDNet
+                    density_map = self.lcdnet(density_input)
+                    model_name = "LCDNet"
+                else:
+                    # Dense scene -> CSRNet
+                    density_map = self.csrnet(density_input)
+                    model_name = "CSRNet"
+                count = density_map.sum().item()
+                
+            elif mode == "soft":
+                # Check for high confidence bypass (hard routing fallback)
+                if soft_margin is not None and soft_margin > 0.0:
+                    if p_lcd >= 1.0 - soft_margin:
+                        density_map = self.lcdnet(density_input)
+                        model_name = "LCDNet (Hard)"
+                        count = density_map.sum().item()
+                    elif p_csr >= 1.0 - soft_margin:
+                        density_map = self.csrnet(density_input)
+                        model_name = "CSRNet (Hard)"
+                        count = density_map.sum().item()
+                
+                # If confidence is intermediate, run both and fuse
+                if density_map is None:
+                    lcd_density = self.lcdnet(density_input)
+                    csr_density = self.csrnet(density_input)
+                    
+                    # Get CSRNet predicted count
+                    csr_sum = csr_density.sum().item()
+                    
+                    # Upsample CSRNet density map to match LCDNet's 384x384 resolution
+                    upsampled_csr = F.interpolate(
+                        csr_density,
+                        size=lcd_density.shape[-2:],
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                    
+                    # Normalize the upsampled density map so its sum equals the original count
+                    upsampled_sum = upsampled_csr.sum().item()
+                    if upsampled_sum > 0:
+                        upsampled_csr = upsampled_csr * (csr_sum / upsampled_sum)
+                    
+                    # Perform fusion: alpha * LCDNet + beta * CSRNet
+                    density_map = p_lcd * lcd_density + p_csr * upsampled_csr
+                    model_name = "Fusion"
+                    count = density_map.sum().item()
+            else:
+                raise ValueError(f"Unknown routing mode: {mode}")
+                
+        density_time = time.time() - density_start
         
         # Total time
         total_time = time.time() - start_time
@@ -249,6 +303,7 @@ class HybridDensityEstimator:
             'count': count,
             'model': model_name,
             'routing_prob': routing_confidence,
+            'probs': {'LCDNet': p_lcd, 'CSRNet': p_csr},
             'router_time': router_time,
             'density_time': density_time,
             'total_time': total_time
@@ -262,7 +317,9 @@ class HybridDensityEstimator:
     def predict_batch(
         self,
         images: list,
-        return_density_maps: bool = False
+        return_density_maps: bool = False,
+        mode: str = "hard",
+        soft_margin: float = 0.05
     ) -> list:
         """
         Predict crowd counts for a batch of images.
@@ -272,13 +329,20 @@ class HybridDensityEstimator:
         Args:
             images: List of PIL Images (RGB).
             return_density_maps: Whether to return density maps.
+            mode: Routing mode ('hard' or 'soft').
+            soft_margin: Margin for high confidence bypass.
         
         Returns:
             List of result dictionaries.
         """
         results = []
         for image in images:
-            result = self.predict(image, return_density_map=return_density_maps)
+            result = self.predict(
+                image,
+                return_density_map=return_density_maps,
+                mode=mode,
+                soft_margin=soft_margin
+            )
             results.append(result)
         return results
 
@@ -288,7 +352,9 @@ def predict_single_image(
     router_path: str = None,
     lcdnet_path: str = None,
     csrnet_path: str = None,
-    device: str = None
+    device: str = None,
+    mode: str = "hard",
+    soft_margin: float = 0.05
 ) -> Dict[str, Any]:
     """
     Convenience function to predict count for a single image file.
@@ -299,6 +365,8 @@ def predict_single_image(
         lcdnet_path: Path to LCDNet checkpoint.
         csrnet_path: Path to CSRNet checkpoint.
         device: Computation device.
+        mode: Routing mode ('hard' or 'soft').
+        soft_margin: Margin for high confidence bypass.
     
     Returns:
         Prediction result dictionary.
@@ -315,7 +383,12 @@ def predict_single_image(
     )
     
     # Predict
-    result = estimator.predict(image, return_density_map=True)
+    result = estimator.predict(
+        image,
+        return_density_map=True,
+        mode=mode,
+        soft_margin=soft_margin
+    )
     
     return result
 

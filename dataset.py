@@ -105,15 +105,35 @@ class UCSDCrowdDataset(Dataset):
                 image_path, density_path, count = parts
                 count = float(count)
                 
+                # Dynamic path resolution to make it fully portable and work with the cleaned directory layout
+                # ShanghaiTech image resolution (e.g. part_B/train_data/images/IMG_74.jpg)
+                image_path_norm = image_path.replace('\\', '/')
+                part_match = None
+                for p in ['part_A', 'part_B', 'part_a', 'part_b']:
+                    if p in image_path_norm:
+                        part_match = p
+                        break
+                
+                if part_match:
+                    idx = image_path_norm.find(part_match)
+                    rel_img_path = image_path_norm[idx:]
+                    resolved_image_path = os.path.join(config.DATA_DIR, "ShanghaiTech", rel_img_path.replace('/', os.sep))
+                else:
+                    resolved_image_path = image_path
+                
+                # ShanghaiTech density map resolution (e.g. IMG_74_91740.npy)
+                density_filename = os.path.basename(density_path)
+                resolved_density_path = os.path.join(config.DENSITY_MAPS_DIR, density_filename)
+                
                 # Verify files exist
-                if not os.path.exists(image_path):
-                    print(f"Warning: Image not found: {image_path}")
+                if not os.path.exists(resolved_image_path):
+                    print(f"Warning: Image not found: {resolved_image_path} (original split path: {image_path})")
                     continue
-                if not os.path.exists(density_path):
-                    print(f"Warning: Density map not found: {density_path}")
+                if not os.path.exists(resolved_density_path):
+                    print(f"Warning: Density map not found: {resolved_density_path} (original split path: {density_path})")
                     continue
                 
-                samples.append((image_path, density_path, count))
+                samples.append((resolved_image_path, resolved_density_path, count))
         
         print(f"Loaded {len(samples)} samples for {self.split} split")
         return samples
