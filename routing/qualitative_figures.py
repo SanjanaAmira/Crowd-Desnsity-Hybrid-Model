@@ -154,7 +154,13 @@ def main():
     parser.add_argument('--out',
                         default=os.path.join(config_routing.ROUTER_LOG_DIR,
                                              "phase3_qualitative_panel.png"))
+    parser.add_argument('--dense_ckpt', default=None,
+                        help='Override MobileCount checkpoint')
     args = parser.parse_args()
+
+    if args.dense_ckpt:
+        config_routing.DENSE_CHECKPOINT = args.dense_ckpt
+        print(f"OVERRIDE dense ckpt: {args.dense_ckpt}")
 
     device = config_routing.DEVICE
     if args.ids:
