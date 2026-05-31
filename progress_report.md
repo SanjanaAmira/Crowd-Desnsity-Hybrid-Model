@@ -12,13 +12,13 @@ optionally as a training-time teacher for knowledge distillation, see TODO).
 
 ## Headline Results (full NWPU-Crowd val, 500 images)
 
-| Model                  | MAE     | RMSE     | 95% CI MAE       | CPU latency (ms) |
-| :--------------------- | :-----: | :------: | :--------------: | :--------------: |
-| LCDNet (alone)         | 348.0   | 1033.9   | [269.5, 443.1]   | 239.0            |
-| MobileCount (alone)    | 213.2   | 803.6    | [155.4, 292.6]   | 30.8             |
-| **Hybrid-Hard**        | **183.0** | 787.7  | [126.2, 260.3]   | 121.5            |
-| Hybrid-Soft (fusion)   | 183.0   | 787.7    | [126.5, 260.4]   | 138.4            |
-| Oracle Router (UB)     | 167.7   | 778.4    | [111.8, 245.2]   | —                |
+| Model                  | MAE     | RMSE     | 95% CI MAE       | Lat. ms (RTX 3050) |
+| :--------------------- | :-----: | :------: | :--------------: | :----------------: |
+| LCDNet (alone)         | 348.0   | 1033.9   | [269.5, 443.1]   | 40.7               |
+| MobileCount (alone)    | 213.2   | 803.6    | [155.4, 292.6]   | 30.5               |
+| **Hybrid-Hard**        | **183.0** | 787.7  | [126.2, 260.3]   | 53.4               |
+| Hybrid-Soft (fusion)   | 183.0   | 787.7    | [126.5, 260.3]   | 50.9               |
+| Oracle Router (UB)     | 167.6   | 778.4    | [111.8, 245.2]   | —                  |
 
 * 95% CI from 2000-iteration bootstrap.
 * Hybrid latency includes router + chosen counter.
@@ -36,12 +36,18 @@ optionally as a training-time teacher for knowledge distillation, see TODO).
 
 ## Edge-deployment metrics
 
-| Component   | Params (M) | GFLOPs | CPU latency (ms) |
-| :---------- | :--------: | :----: | :--------------: |
-| LCDNet      | 0.917      | 14.59  | 215.2            |
-| MobileCount | 0.884      | 1.07   | 14.4             |
-| Router      | 2.552      | 0.33   | 8.8              |
-| **TOTAL**   | **4.354**  |        |                  |
+| Component   | Params (M) | GFLOPs | GPU (ms) | CPU (ms) | GPU Mem (MB) |
+| :---------- | :--------: | :----: | :------: | :------: | :----------: |
+| LCDNet      | 0.917      | 14.59  | 23.1     | 208.8    | 368.8        |
+| MobileCount | 0.884      | 1.07   | 3.4      | 13.5     | 63.6         |
+| Router      | 2.552      | 0.33   | 4.8      | 8.9      | 52.6         |
+| **TOTAL**   | **4.354**  |        |          |          |              |
+
+Hybrid end-to-end (router + chosen counter) on RTX 3050:
+
+* Sparse path (Router → LCDNet): ~28 ms
+* Dense path  (Router → MobileCount): ~8 ms
+* Per-image average across val split (Hybrid-Hard): 53.4 ms (incl. PIL load + transforms)
 
 ## Routing distribution (Hybrid-Hard, 500 images)
 
