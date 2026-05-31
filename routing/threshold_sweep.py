@@ -281,7 +281,18 @@ def main():
         config_routing.ROUTER_LOG_DIR, "phase3_threshold_sweep.json"))
     parser.add_argument('--out_txt', default=os.path.join(
         config_routing.ROUTER_LOG_DIR, "phase3_threshold_sweep.txt"))
+    parser.add_argument('--dense_ckpt', default=None,
+                        help='Override dense (MobileCount) checkpoint')
+    parser.add_argument('--tag', default=None,
+                        help='Tag appended to output filenames')
     args = parser.parse_args()
+
+    if args.tag:
+        args.out = args.out.replace('.json', f'_{args.tag}.json')
+        args.out_txt = args.out_txt.replace('.txt', f'_{args.tag}.txt')
+    if args.dense_ckpt:
+        config_routing.DENSE_CHECKPOINT = args.dense_ckpt
+        print(f"OVERRIDE dense ckpt: {args.dense_ckpt}")
 
     device = config_routing.DEVICE
     print(f"Device: {device}")

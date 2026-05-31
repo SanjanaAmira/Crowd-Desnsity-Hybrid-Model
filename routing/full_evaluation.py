@@ -522,6 +522,12 @@ def main():
                         help='Skip the params/FLOPs/latency benchmarking step')
     parser.add_argument('--efficiency_only', action='store_true',
                         help='Only run the efficiency benchmark, skip evaluation')
+    parser.add_argument('--dense_ckpt', default=None,
+                        help='Override dense (MobileCount) checkpoint path')
+    parser.add_argument('--lcdnet_ckpt', default=None,
+                        help='Override LCDNet checkpoint path')
+    parser.add_argument('--tag', default=None,
+                        help='Tag appended to output filenames (e.g. "distilled")')
     parser.add_argument('--output_txt', type=str, default=None)
     parser.add_argument('--output_json', type=str, default=None)
     args = parser.parse_args()
@@ -530,6 +536,17 @@ def main():
         config_routing.ROUTER_LOG_DIR, "phase3_full_evaluation.txt")
     output_json = args.output_json or os.path.join(
         config_routing.ROUTER_LOG_DIR, "phase3_full_evaluation.json")
+    if args.tag:
+        output_txt = output_txt.replace('.txt', f'_{args.tag}.txt')
+        output_json = output_json.replace('.json', f'_{args.tag}.json')
+
+    # Apply checkpoint overrides
+    if args.dense_ckpt:
+        config_routing.DENSE_CHECKPOINT = args.dense_ckpt
+        print(f"OVERRIDE dense ckpt: {args.dense_ckpt}")
+    if args.lcdnet_ckpt:
+        config_routing.LCDNET_CHECKPOINT = args.lcdnet_ckpt
+        print(f"OVERRIDE LCDNet ckpt: {args.lcdnet_ckpt}")
 
     device = config_routing.DEVICE
     print("=" * 78)
