@@ -520,6 +520,8 @@ def main():
     parser.add_argument('--soft_margin', type=float, default=0.05)
     parser.add_argument('--skip_efficiency', action='store_true',
                         help='Skip the params/FLOPs/latency benchmarking step')
+    parser.add_argument('--efficiency_only', action='store_true',
+                        help='Only run the efficiency benchmark, skip evaluation')
     parser.add_argument('--output_txt', type=str, default=None)
     parser.add_argument('--output_json', type=str, default=None)
     args = parser.parse_args()
@@ -534,6 +536,38 @@ def main():
     print("PHASE 3 FULL EVALUATION  (LCDNet + MobileCount + Router, no CSRNet)")
     print("=" * 78)
     print(f"Split: {args.split} | max_samples: {args.max_samples or 'All'}")
+
+    if args.efficiency_only:
+        print("\nMeasuring edge-deployment metrics only...")
+        efficiency = measure_efficiency(device)
+        # Pretty-print just the efficiency block
+        bar = "=" * 78
+        sub = "-" * 78
+        lines = [bar, "EDGE-DEPLOYMENT METRICS (per component)", sub,
+                 f"{'Component':<14}{'Params (M)':>12}{'GFLOPs':>10}"
+                 f"{'GPU (ms)':>12}{'CPU (ms)':>12}{'GPU Mem (MB)':>16}",
+                 sub]
+        total_params = 0
+        for name, e in efficiency.items():
+            gflops = f"{e['gflops']:.2f}" if e['gflops'] is not None else "  -  "
+            gpu = f"{e['gpu_latency_ms']:.1f}" if e['gpu_latency_ms'] is not None else "  -  "
+            cpu = f"{e['cpu_latency_ms']:.1f}"
+            mem = f"{e['gpu_peak_mem_MB']:.1f}" if e['gpu_peak_mem_MB'] is not None else "  -  "
+            lines.append(f"{name:<14}{e['params_M']:>12.3f}{gflops:>10}{gpu:>12}"
+                         f"{cpu:>12}{mem:>16}")
+            total_params += e['params']
+        lines += [sub, f"{'TOTAL':<14}{total_params/1e6:>12.3f}", bar]
+        eff_only_txt = output_txt.replace('.txt', '_efficiency.txt')
+        eff_only_json = output_json.replace('.json', '_efficiency.json')
+        text = "\n".join(lines)
+        print(text)
+        os.makedirs(os.path.dirname(eff_only_txt) or '.', exist_ok=True)
+        with open(eff_only_txt, 'w', encoding='utf-8') as f:
+            f.write(text)
+        with open(eff_only_json, 'w', encoding='utf-8') as f:
+            json.dump(efficiency, f, indent=2, default=str)
+        print(f"\nSaved: {eff_only_txt}")
+        return
 
     samples = load_samples(args.split, args.max_samples)
     print(f"Loaded {len(samples)} samples from NWPU {args.split}.\n")
