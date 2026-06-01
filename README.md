@@ -220,10 +220,9 @@ python train_mobilecount_distill.py --epochs 12
 
 ---
 
-## Authors
+## Author
 
-- **Navid** — Phase 1–3 implementation, training, evaluation
-- **Sumaiya Shahara** — team member
+**Navid** — Phase 1–3 implementation, training, evaluation
 
 ---
 
