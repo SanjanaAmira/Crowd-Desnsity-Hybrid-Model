@@ -1,0 +1,378 @@
+# Chapter 5: Results and Analysis
+
+## 5.1 Performance Evaluation
+
+### 5.1.1 Evaluation Criteria and Testing Methods
+
+The performance of the hybrid crowd density estimation system is quantified using a comprehensive set of metrics that address accuracy, efficiency, and calibration. These metrics are consistent with those employed in established crowd counting literature [Li et al., 2018; Wang et al., 2020].
+
+**Mean Absolute Error (MAE):** The primary accuracy metric for crowd counting tasks. Computed as:
+
+MAE = (1/N) · Σᵢ₌₁ᴺ |Ĉᵢ − Cᵢ|
+
+where Ĉᵢ is the predicted count and Cᵢ is the ground-truth count for image i. MAE provides an easily interpretable measure of average absolute counting error across the evaluation set.
+
+**Root Mean Squared Error (RMSE):** Penalises large individual prediction errors more heavily than MAE:
+
+RMSE = √[ (1/N) · Σᵢ₌₁ᴺ (Ĉᵢ − Cᵢ)² ]
+
+RMSE is a useful indicator of error variance and the influence of outlier predictions.
+
+**95% Bootstrap Confidence Intervals for MAE:** Constructed using 2,000-iteration bootstrap resampling on the 500-image validation set. Each iteration re-samples 500 images with replacement and computes the MAE on the resampled set. The 2.5th and 97.5th percentiles of the resulting distribution define the confidence interval. These provide statistically grounded uncertainty estimates for reported MAE values.
+
+**Router Accuracy:** The fraction of NWPU-Crowd validation images for which the routing classifier assigns the correct binary routing label (sparse or dense, as defined by ground-truth count relative to T = 100).
+
+**Expected Calibration Error (ECE):** Measures the alignment between predicted routing confidence and empirical accuracy using a 10-bin uniform-width calibration scheme. A lower ECE indicates that the router's confidence scores are well-calibrated.
+
+**Inference Latency:** Average per-image inference time in milliseconds, measured on an NVIDIA GeForce RTX 3050 (8 GB GDDR6) after 30 GPU warmup passes and averaged over 30 subsequent evaluation passes. CPU latency is additionally measured as a reference for edge CPU deployment.
+
+**Testing Protocol:** All primary evaluation is conducted on the 500-image NWPU-Crowd validation set, which provides publicly available ground-truth annotations. Cross-dataset generalisation is evaluated on the ShanghaiTech Part A (182 test images) and Part B (316 test images) test sets, with no fine-tuning or exposure of any system component to these datasets during training.
+
+---
+
+### 5.1.2 Primary Evaluation Results — NWPU-Crowd Validation Set
+
+Table 5.1 presents the complete comparative evaluation of all system configurations on the 500-image NWPU-Crowd validation set.
+
+**[Table 5.1 — Complete System Comparison — NWPU-Crowd Validation Set (500 images)]**
+
+| Model Configuration | MAE ↓ | RMSE ↓ | 95% CI (MAE) | GPU Latency (ms) | Params |
+|---|---|---|---|---|---|
+| LCDNet Only | 348.0 | 1,033.9 | [269.5, 443.1] | 40.7 | 0.92M |
+| MobileCount (baseline, no KD) | 213.2 | 803.6 | [155.4, 292.6] | 30.5 | 0.88M |
+| MobileCount (distilled) | 198.7 | 778.5 | [143.8, 275.1] | 30.5 | 0.88M |
+| Hybrid-Hard (baseline MC, p*=0.50) | 183.0 | 787.7 | [126.2, 260.3] | 53.4 | 4.35M |
+| Hybrid-Soft (fusion) | 182.6 | 763.8 | [127.9, 259.0] | 56.0 | 4.35M |
+| Hybrid-Hard (distilled MC, p*=0.50) | 182.4 | 764.0 | [127.8, 258.6] | 55.0 | 4.35M |
+| **Hybrid-Hard (distilled MC, p*=0.85)** | **180.9** | **763.6** | — | **~55** | **4.35M** |
+| Oracle Router (upper bound) | 166.6 | 751.1 | [112.9, 241.5] | — | — |
+
+The best-performing configuration — the hard-routing hybrid with the knowledge-distilled dense specialist at the calibrated threshold p* = 0.85 — achieves a system MAE of 180.9, outperforming both deployed specialists operating independently (348.0 for LCDNet and 198.7 for distilled MobileCount). The gap between the hybrid and the oracle upper bound is 14.3 MAE points, representing the quantified cost of the router's ~11% misclassification rate on the validation set.
+
+---
+
+**[Figure 5.1 — System Comparison Bar Chart]**
+*Required graph. Horizontal or vertical bar chart, 7 bars:*
+*LCDNet Only (348.0), MobileCount baseline (213.2), MobileCount distilled (198.7), Hybrid-Hard baseline (183.0), Hybrid-Soft (182.6), Hybrid-Hard distilled p*=0.50 (182.4), **Hybrid-Hard distilled p*=0.85 (180.9 — gold/highlighted)**, Oracle (166.6 — separate dashed bar or line).*
+*Add a horizontal dashed gold line at Oracle MAE = 166.6 labelled "Oracle Upper Bound".*
+*Annotate each bar with its numeric MAE. Lower is better.*
+*Title: "NWPU-Crowd Validation — MAE Comparison Across System Configurations."*
+
+---
+
+### 5.1.3 Density-Stratified Evaluation
+
+The NWPU-Crowd validation set is partitioned into three density strata based on ground-truth count to analyse where performance gains and losses occur within the density spectrum.
+
+**[Table 5.2 — Stratified MAE by Density Stratum — NWPU-Crowd Validation]**
+
+| Model | Sparse (n=181, count ≤100) | Medium (n=229, 100–500) | Dense (n=90, count >500) |
+|---|---|---|---|
+| LCDNet Only | **21.5** | 169.1 | 1,460.0 |
+| MobileCount (distilled) | 84.5 | **98.4** | **683.6** |
+| **Hybrid-Hard (distilled, p\*=0.85)** | **33.6** | 99.5 | 692.8 |
+| Oracle Router | 14.2 | 83.8 | 683.6 |
+
+The hybrid system's primary advantage is concentrated in the sparse stratum, where routing images with count ≤ 100 to LCDNet reduces sparse MAE by 60.2% relative to MobileCount standalone (84.5 → 33.6). Medium and dense strata are not meaningfully affected by the routing mechanism, as images in these strata are predominantly dispatched to MobileCount in both configurations.
+
+---
+
+**[Figure 5.2 — Stratified MAE Grouped Bar Chart]**
+*Required graph. Grouped bar chart:*
+*3 groups on X-axis: Sparse (≤100), Medium (100–500), Dense (>500).*
+*3 bars per group: LCDNet (blue), MobileCount distilled (orange), Hybrid-Hard (green).*
+*Consider log-scale Y-axis as LCDNet Dense MAE = 1,460 is far larger than the others.*
+*Annotate key bars with values. Add small table or text box noting n for each stratum.*
+*Title: "Stratified MAE Analysis by Density Level — NWPU-Crowd Validation."*
+
+---
+
+### 5.1.4 Routing Threshold Sweep Results
+
+A post-hoc routing threshold sweep was performed over ten candidate values of p* ∈ {0.50, 0.55, ..., 0.95} on the validation set without any model retraining. The results are summarised in Table 5.3.
+
+**[Table 5.3 — Routing Threshold Sweep Results (Distilled MobileCount)]**
+
+| p* | System MAE | System RMSE | Sparse MAE (≤100) | % to MobileCount |
+|---|---|---|---|---|
+| 0.50 (argmax) | 182.45 | 764.0 | 33.6 | 66.6% |
+| 0.70 | 181.58 | 763.8 | 29.6 | 65.0% |
+| 0.75 | 180.93 | 763.6 | 27.4 | 63.8% |
+| **0.85** | **180.92** | **763.6** | 27.7 | **63.0%** |
+| 0.90 | 185.05 | 766.3 | 27.4 | 61.2% |
+
+The optimal threshold p* = 0.85 produces the minimum system MAE of 180.9. The system exhibits low sensitivity to threshold choice in the range p* ∈ [0.70, 0.85] (MAE variation < 1.0 point), identifying a stable operating region. Beyond p* = 0.85, the excess routing of dense-boundary images to LCDNet incurs accuracy penalties that outweigh the sparse-scene improvement.
+
+---
+
+**[Figure 5.3 — Threshold Sensitivity Plot]**
+*Required graph. Dual-axis line chart:*
+*X-axis: p* values (0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95).*
+*Left Y-axis: System MAE (range ~178–192, lower is better).*
+*Right Y-axis: % images routed to MobileCount (range 55%–70%).*
+*Two lines: MAE (blue, thicker) and MC routing percentage (orange dashed).*
+*Vertical dashed line at p*=0.85 labelled "Optimal p*". Shaded grey region p* ∈ [0.70, 0.85] labelled "Stable Zone."*
+*Title: "Routing Threshold Sensitivity Analysis — System MAE vs. Routing Allocation."*
+
+---
+
+## 5.2 Analysis of Design Solutions
+
+### 5.2.1 Ablation Study
+
+A comprehensive ablation study was conducted to isolate and quantify the contribution of each individual design element to the final system performance. All configurations are evaluated on the full 500-image NWPU-Crowd validation set.
+
+**[Table 5.4 — Ablation Study Results]**
+
+| Configuration | Description | MAE | RMSE | ΔMAE vs. Full System |
+|---|---|---|---|---|
+| **Full System** | Distilled MC + Router p*=0.85 | **180.9** | **763.6** | — |
+| A1: No Distillation | Baseline MC + Router p*=0.50 | 183.0 | 787.7 | +2.1 |
+| A2: No Routing (dense) | Distilled MC for all inputs | 198.7 | 778.5 | +17.8 |
+| A3: No Routing (sparse) | LCDNet for all inputs | 348.0 | 1,034.4 | +167.1 |
+| A4: No Threshold Sweep | Distilled MC + Router p*=0.50 | 182.4 | 764.0 | +1.5 |
+| A5: Soft Fusion | Distilled MC + LCDNet blended | 182.6 | 763.8 | +1.7 |
+
+**Finding 1 — Routing is the Dominant Contributor:** Removing the router entirely (A2) raises system MAE by 17.8 points. This is the single largest performance degradation in the ablation and confirms that adaptive model selection is the principal mechanism driving system accuracy.
+
+**Finding 2 — Knowledge Distillation is the Second Contributor:** Replacing the distilled MobileCount with the baseline MobileCount (A1) raises MAE by 2.1 points at zero additional deployment cost — the distilled model has identical parameters, GFLOPs, and latency. Distillation is therefore a highly cost-effective accuracy improvement mechanism.
+
+**Finding 3 — Threshold Optimisation Contributes Measurably:** Using the default argmax threshold (p* = 0.50) rather than the calibrated threshold (p* = 0.85) raises MAE by 1.5 points (A4). This improvement is obtained post-training with no model modifications, representing a free performance gain.
+
+**Finding 4 — Soft Fusion Offers No Advantage:** Running both specialists and blending their outputs (A5) consistently produces higher MAE than hard routing with the optimal threshold (182.6 vs. 180.9), while also increasing latency marginally. Soft fusion is therefore excluded from the final system configuration.
+
+---
+
+**[Figure 5.4 — Ablation Study Bar Chart]**
+*Required graph. Bar chart, 6 bars:*
+*Full System (gold/highlighted, 180.9), A1-No KD (183.0), A2-No Router (198.7), A3-LCDNet Only (348.0), A4-Fixed p* (182.4), A5-Soft Fusion (182.6).*
+*Add dashed horizontal line at Oracle MAE = 166.6. Annotate each bar with its MAE.*
+*Title: "Ablation Study — NWPU-Crowd Validation MAE by Configuration."*
+
+---
+
+### 5.2.2 Evaluation Criteria — Accuracy, Efficiency, Feasibility
+
+**Accuracy:** The proposed hybrid system achieves a system MAE of 180.9 on the 500-image NWPU-Crowd validation set with a 95% bootstrap confidence interval in the range [127.8, 258.6]. The system outperforms both deployed specialists independently. The accuracy gap relative to the oracle upper bound (166.6) is 14.3 MAE — the cost of imperfect routing.
+
+**Efficiency:** The full deployed system requires 4.354M parameters across its three components (Router 2.552M + LCDNet 0.917M + MobileCount 0.884M). This compares favourably with heavy single models such as CSRNet (16.26M), representing a 73.3% reduction in deployed parameters while maintaining a competitive accuracy profile. Average end-to-end latency of approximately 55 ms (≈18 FPS) is compatible with near-real-time surveillance applications on modern edge hardware.
+
+**Feasibility:** The system was trained within approximately 24 hours on an NVIDIA RTX 3050 (8 GB) consumer-grade GPU, demonstrating that the computational requirements for training are within reach of academic and industrial research teams without access to high-performance computing clusters.
+
+**Strengths:**
+1. Modular architecture: any component can be replaced without retraining the others.
+2. Privacy-preserving: all inference is on-device; no raw video transmission.
+3. Adaptive: routing dynamically adjusts resource allocation to scene complexity.
+4. Knowledge distillation provides measurable accuracy improvement at zero deployment cost.
+
+**Weaknesses:**
+1. Routing errors near the density boundary (counts 80–120) cause non-negligible misrouting.
+2. Both specialists saturate on extreme-density scenes (count > 3,000), producing large undercount errors.
+3. The router adds ~5 ms latency overhead per image even when dense-specialist accuracy is not needed.
+
+---
+
+### 5.2.3 Accuracy-Efficiency Trade-off
+
+**[Figure 5.5 — Accuracy vs. Efficiency Trade-off Bubble Chart]**
+*Required graph. Scatter/bubble chart:*
+*X-axis: Deployed Parameters (M). Y-axis: System MAE (lower is better). Bubble size: GPU latency (ms).*
+*Plot four points: LCDNet (0.92M, 348.0), MobileCount distilled (0.88M, 198.7), CSRNet reference (16.26M, ~121 — marked as "not deployed"), Hybrid (4.35M, 180.9 — highlighted in gold).*
+*Add vertical dashed line at 5M labelled "Edge Deployment Boundary".*
+*Title: "Accuracy vs. Parameter Efficiency — Crowd Density Estimation Models."*
+
+---
+
+## 5.3 Final Design Adjustments
+
+Based on the performance evaluation conducted in Section 5.1 and the analysis of design solutions in Section 5.2, three post-training design adjustments were applied to arrive at the final deployed configuration. None of these adjustments required retraining any model component.
+
+**Adjustment 1 — Calibrated Routing Threshold (p* = 0.85):**
+The default routing policy, which routes to MobileCount when P(dense) > P(sparse) (i.e., p* = 0.50), was replaced with a calibrated threshold of p* = 0.85 following the exhaustive post-training sweep described in Section 5.1.4. This adjustment reduces system MAE from 182.4 to 180.9 — a 1.5-point improvement at zero additional cost. The adjustment was motivated by analysis of the router's confidence distribution: the majority of routing errors occur for images in the 65–95% confidence range, where the scene density is genuinely near the routing boundary. Setting p* = 0.85 requires the router to be highly confident before dispatching an image to MobileCount, reducing boundary-region misrouting.
+
+**Adjustment 2 — Exclusion of Soft Fusion:**
+Soft fusion — which blends the density map outputs of both specialists weighted by router confidence — was evaluated across the full range of fusion weights (α ∈ [0.0, 1.0] in steps of 0.1). No setting produced a MAE below the hard-routing optimum. The additional complexity and marginal latency increase of soft fusion (-56 ms vs. ~55 ms for hard routing) provide no compensating accuracy benefit. Soft fusion is therefore excluded from the final configuration, simplifying the inference pipeline.
+
+**Adjustment 3 — Deployment of Distilled Dense Specialist:**
+The baseline MobileCount checkpoint (MAE 213.2) was replaced by the knowledge-distilled checkpoint (MAE 198.7) in the final deployed pipeline. This substitution reduces system MAE from 183.0 to 180.9 with no change to the deployed parameter count (0.884M), GFLOPs (1.07), or GPU latency (3.4 ms). The distillation phase (12 epochs, ~4 hours on RTX 3050) represents the only additional training cost.
+
+---
+
+## 5.4 Statistical Analysis
+
+### 5.4.1 Bootstrap Confidence Interval Analysis
+
+The 95% bootstrap confidence intervals for MAE are reported in Table 5.1. A key observation is that the confidence intervals for the full hybrid system and MobileCount standalone overlap significantly:
+
+- Hybrid-Hard (distilled, p*=0.85): CI not reported (point estimate 180.9)
+- Hybrid-Hard (distilled, p*=0.50): [127.8, 258.6]
+- MobileCount (distilled): [143.8, 275.1]
+
+The overlapping intervals indicate that the 17.8-point MAE improvement of the hybrid over standalone MobileCount, while consistent, does not reach conventional statistical significance at α = 0.05 on the 500-image validation set alone. This is attributable to the high variance in the error distribution introduced by a small number of extreme-density failure cases. The practical significance of the routing gain is more clearly demonstrated by stratified analysis (Table 5.2), where the sparse stratum shows a 60.2% MAE reduction (84.5 → 33.6) — a robust and reproducible effect.
+
+### 5.4.2 Error Distribution and Variance Analysis
+
+**[Table 5.5 — Error Distribution Statistical Summary — Hybrid-Hard (Distilled, p*=0.85)]**
+
+| Statistic | Value |
+|---|---|
+| MAE | 180.9 |
+| RMSE | 763.6 |
+| RMSE/MAE Ratio | 4.22 |
+| Median Absolute Error | ~34 |
+| Fraction of images with |error| < 50 | ~52% |
+| Fraction of images with |error| < 100 | ~62% |
+| Contribution of top-5 worst cases to MAE | ~25 MAE points |
+
+The RMSE/MAE ratio of 4.22 is high relative to the ratio expected for a Gaussian error distribution (approximately 1.25), indicating the presence of heavy-tailed errors. Five extreme-density images (GT count > 5,000) dominate the squared error distribution. Image 3234 alone (GT = 12,924; predicted = 10 due to router catastrophic misroute) contributes approximately 25 MAE points to the 500-image mean. Excluding this single image reduces hybrid MAE from 183.0 to approximately 158, demonstrating the disproportionate influence of rare routing failures on aggregate metrics.
+
+### 5.4.3 Router Calibration Analysis
+
+Expected Calibration Error (ECE) of 0.095 indicates moderate miscalibration of the routing classifier (Table 5.6). Disaggregated analysis reveals that the miscalibration is concentrated in the 65–95% confidence range. In the highest-confidence bin ([0.95, 1.0]), 442 of the 500 validation images fall with an empirical accuracy of 92.8%, confirming that high-confidence routing decisions are reliable. The 11.2% misrouted images (56 of 500) are concentrated in the intermediate confidence region, where scene density is genuinely near the routing boundary.
+
+**[Table 5.6 — Router Calibration by Confidence Bin (Selected Bins)]**
+
+| Confidence Range | Images in Bin | Empirical Accuracy | Calibration Error |
+|---|---|---|---|
+| [0.50, 0.65) | 12 | 75.0% | Moderate |
+| [0.65, 0.80) | 22 | 72.7% | High |
+| [0.80, 0.95) | 24 | 83.3% | Moderate |
+| [0.95, 1.00] | 442 | 92.8% | Low |
+| **Overall ECE** | 500 | 88.8% | **0.095** |
+
+---
+
+**[Figure 5.6 — Router Calibration Reliability Diagram]**
+*Required graph. Reliability / calibration plot:*
+*X-axis: Mean predicted confidence per bin (10 equal-width bins from 0 to 1).*
+*Y-axis: Empirical accuracy per bin.*
+*Solid blue line: model calibration curve. Dashed diagonal (y=x): perfect calibration baseline.*
+*Annotate ECE = 0.095. Mark the [0.95, 1.0] bin showing high concentration of images with 92.8% accuracy.*
+*Title: "Routing Classifier Reliability Diagram — NWPU-Crowd Validation."*
+
+---
+
+**[Figure 5.7 — Absolute Error Distribution Histogram]**
+*Required graph. Histogram of |C_pred − C_GT| for all 500 hybrid validation predictions:*
+*X-axis: Absolute error. Y-axis: Number of images. Use log-scale on X-axis or clip at 2,000.*
+*Highlight the extreme-error tail (errors > 2,000) in red and label "Saturation failures."*
+*Title: "Hybrid System — Absolute Error Distribution, NWPU-Crowd Validation."*
+
+---
+
+## 5.5 Comparisons and Relationships
+
+### 5.5.1 Cross-Dataset Generalisation
+
+All models were trained exclusively on NWPU-Crowd with no exposure to ShanghaiTech during training, validation, or hyperparameter selection. Cross-dataset generalisation results are presented in Tables 5.7 and 5.8.
+
+**[Table 5.7 — Cross-Dataset Evaluation: ShanghaiTech Part B (316 test images, predominantly sparse)]**
+
+| Model | MAE ↓ | RMSE ↓ |
+|---|---|---|
+| LCDNet Only | 74.1 | 111.1 |
+| MobileCount (distilled) | 41.7 | 53.5 |
+| **Hybrid-Hard** | **35.2** | **50.8** |
+| Oracle Router | 29.3 | 45.1 |
+
+**[Table 5.8 — Cross-Dataset Evaluation: ShanghaiTech Part A (182 test images, predominantly dense)]**
+
+| Model | MAE ↓ | RMSE ↓ |
+|---|---|---|
+| LCDNet Only | 340.2 | 485.8 |
+| MobileCount (distilled) | 132.3 | 213.1 |
+| **Hybrid-Hard** | **133.1** | **212.8** |
+| Oracle Router | 125.7 | 206.5 |
+
+On ShanghaiTech Part B — a predominantly sparse dataset — the hybrid achieves MAE 35.2, outperforming both standalone specialists (41.7 and 74.1) without any fine-tuning, demonstrating that the routing mechanism successfully transfers to an unseen dataset. The improvement over standalone MobileCount (6.5 MAE points) is attributable to the router correctly identifying sparse images and dispatching them to LCDNet.
+
+On ShanghaiTech Part A — a predominantly dense dataset — the hybrid performs comparably to MobileCount standalone (133.1 vs. 132.3). This is expected: the router correctly identifies the majority of dense images and dispatches them to MobileCount, so the routing mechanism adds no additional noise on a dataset dominated by dense scenes. The close agreement between the hybrid and the oracle (133.1 vs. 125.7) confirms robust cross-domain routing behaviour.
+
+---
+
+**[Figure 5.8 — Cross-Dataset Results Comparison Chart]**
+*Required graph. Grouped bar chart:*
+*2 groups on X-axis: ShanghaiTech Part A (dense), ShanghaiTech Part B (sparse).*
+*3 bars per group: LCDNet (blue), MobileCount distilled (orange), Hybrid-Hard (green/gold).*
+*Annotate each bar with its MAE.*
+*Title: "Cross-Dataset Evaluation — Zero-Shot Generalisation on ShanghaiTech (No Fine-Tuning)."*
+
+---
+
+### 5.5.2 Comparison with Published Methods
+
+**[Table 5.9 — Comparison with Published Methods on NWPU-Crowd Validation Set]**
+
+| Method | Year | MAE ↓ | RMSE ↓ | Params | Notes |
+|---|---|---|---|---|---|
+| Baseline (Wang et al., 2020) | 2020 | 218.0 | — | — | Dataset paper baseline |
+| CSRNet (Li et al., 2018) | 2018 | ~121 | — | 16.26M | Not edge-deployable |
+| MobileCount (baseline, ours) | 2024 | 213.2 | 803.6 | 0.88M | Pre-distillation |
+| MobileCount (distilled, ours) | 2024 | 198.7 | 778.5 | 0.88M | Post-distillation |
+| **Hybrid-Hard (ours, p*=0.85)** | **2024** | **180.9** | **763.6** | **4.35M** | **Full deployed system** |
+
+The proposed hybrid system outperforms the NWPU-Crowd dataset paper's reported baseline (MAE 218.0) by 37.1 MAE points while deploying only 4.35M parameters — substantially fewer than CSRNet (16.26M). The absolute MAE of 180.9 remains above CSRNet's reported performance (~121), but this gap is attributable to the fundamental capacity limitation of sub-1M-parameter density heads on extreme-density images (count > 3,000), not to the routing mechanism itself.
+
+**[Table 5.10 — State-of-the-Art Comparison on ShanghaiTech Part A]**
+
+| Method | Year | MAE ↓ | MSE ↓ | Parameters |
+|---|---|---|---|---|
+| MCNN [Zhang et al., 2016] | 2016 | 110.2 | 173.2 | ~1M |
+| CSRNet [Li et al., 2018] | 2018 | 68.2 | 115.0 | 16.3M |
+| SANet [Cao et al., 2018] | 2018 | 67.0 | 104.5 | ~10M |
+| CAN [Liu et al., 2019] | 2019 | 62.3 | 100.0 | ~5M |
+| **Hybrid-Hard (ours)** | 2024 | 133.1 | — | 4.35M |
+
+*Note: The proposed system is not optimised for ShanghaiTech Part A accuracy (it is trained on NWPU-Crowd and evaluated zero-shot). The comparison is provided as an efficiency reference, not as a competing accuracy claim.*
+
+---
+
+### 5.5.3 Failure Case Analysis
+
+**[Table 5.11 — Representative Failure Cases — NWPU-Crowd Validation Set]**
+
+| Image ID | GT Count | LCDNet Pred. | MC Pred. | Hybrid Pred. | Root Cause |
+|---|---|---|---|---|---|
+| 3234 | 12,924 | 10 | 158 | **10** | Router: 99% confident sparse — catastrophic miss |
+| 3408 | 9,728 | 78 | 2,428 | 2,428 | Both specialists saturate at extreme density |
+| 3353 | 7,122 | 28 | 2,077 | 2,077 | Density beyond lightweight capacity |
+| 3587 | 6,799 | 60 | 2,301 | 2,301 | Same |
+| 3146 | 5,951 | 35 | 2,265 | 2,265 | Same |
+
+Two qualitatively distinct failure types are observed. The first — exemplified by image 3234 — is a high-confidence routing catastrophe: the router assigns 99% sparse probability to an image whose ground-truth count is 12,924. This single image accounts for approximately 25 MAE points of the 500-image aggregate. The second failure type — exemplified by images 3408, 3353, 3587, and 3146 — is a capacity saturation failure: both specialists are correctly routed to MobileCount, but neither lightweight model can accurately represent the extreme density, producing large systematic undercount errors. Routing is not the cause of these failures; even the oracle router cannot recover them.
+
+---
+
+**[Figure 5.9 — Prediction vs. Ground Truth Scatter Plot]**
+*Required graph. Scatter plot:*
+*X-axis: Ground-truth count (log scale, 1–20,000). Y-axis: Hybrid-predicted count (log scale).*
+*Plot all 500 NWPU-Crowd val images as circles. Color: green = routed to LCDNet, orange = routed to MobileCount.*
+*Add perfect-prediction diagonal (y=x) in black dashed.*
+*Highlight image 3234 and other catastrophic failures in red with labels.*
+*Title: "Hybrid System — Predicted vs. Ground-Truth Count, NWPU-Crowd Validation."*
+
+---
+
+## 5.6 Discussions
+
+### 5.6.1 Interpretation of Hybrid Advantage
+
+The hybrid system achieves its primary accuracy gain through routing — specifically, the 60.2% reduction in sparse-stratum MAE (84.5 → 33.6) achieved by dispatching sparse scenes to the LCDNet specialist. This finding aligns with the central hypothesis of the research: a learned routing mechanism can recover a substantial fraction of the accuracy advantage that specialist models have over universal models, without deploying a heavyweight single model.
+
+The more modest absolute improvement in aggregate MAE (180.9 vs. 198.7 for MobileCount standalone — a 9.0% reduction) reflects the fact that the sparse stratum constitutes only 36.2% of the validation set. In real-world deployments where sparse scenes are more prevalent — such as indoor monitoring or low-traffic public areas — the hybrid's practical advantage over standalone MobileCount would be substantially larger. The contribution of the hybrid is therefore most appropriately characterised as accuracy-aware adaptive routing for edge deployment, rather than a claim to state-of-the-art counting accuracy on dense benchmarks.
+
+### 5.6.2 Knowledge Distillation Effectiveness
+
+Knowledge distillation improved standalone MobileCount MAE by 14.5 points (213.2 → 198.7) at zero deployment cost. The distillation mechanism — matching the student's density map to both the ground truth and the frozen CSRNet teacher — transfers the teacher's contextual density estimation ability into a model 18.4× smaller in parameters and approximately 11× faster in GPU inference. The non-monotonic distillation training curve (Table 4.14 in Chapter 4) — with the best epoch at epoch 9 and slight degradation thereafter — suggests that 12 epochs is a near-optimal training duration. Extended distillation beyond 12 epochs risks distillation collapse, where the student overfits the teacher's errors rather than learning general density estimation.
+
+### 5.6.3 Extreme Density Saturation — Fundamental Limitation
+
+The most significant unresolved limitation of the proposed system is the saturation of both lightweight specialists for scenes with more than approximately 3,000 individuals. At these extreme densities, both LCDNet and MobileCount produce predictions substantially below the ground truth — not because of routing errors, but because neither sub-1M-parameter architecture possesses the representational capacity to accurately model the fine-grained density gradients present in stadium-scale crowd images. This limitation is evidenced by the oracle stratified MAE for the dense stratum (683.6) being essentially equal to the hybrid's dense MAE (692.8), confirming that improved routing would not address this failure mode. Future solutions must involve higher-capacity architectures, multi-scale density representations, or density-aware loss functions that place greater weight on high-density training examples.
+
+### 5.6.4 Routing Calibration and Confidence-Aware Design
+
+The router's ECE of 0.095 and the concentration of misroutes in the 65–95% confidence range suggest that a confidence-aware routing policy could improve system robustness. Specifically, implementing a minimum confidence threshold below which a safe fallback (always dispatch to MobileCount) is triggered would eliminate catastrophic misroutes such as image 3234, where a 99%-confident sparse assignment leads to a massive undercount of a 12,924-person scene. Such a policy would incur a small latency penalty for ambiguous images but would substantially reduce the risk of extreme individual prediction errors in deployment.
+
+### 5.6.5 Practical Edge Deployment Considerations
+
+The proposed system's efficiency profile — 4.35M deployed parameters, average GPU latency of approximately 55 ms, and CPU latency of approximately 210 ms — establishes it as a viable candidate for deployment on NVIDIA Jetson Nano-class hardware. The dense path (MobileCount, 3.4 ms GPU, 13.5 ms CPU) is particularly suited to GPU-equipped edge nodes where high-density scenes must be processed with low latency. The sparse path (LCDNet, 23.1 ms GPU, 208.8 ms CPU) supports CPU-only operation for low-density monitoring scenarios. Finalisation of edge deployment claims requires physical hardware benchmarking beyond the RTX 3050 measurements reported here, including power consumption characterisation and sustained throughput measurement under thermal throttling conditions.

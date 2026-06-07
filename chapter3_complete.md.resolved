@@ -1,0 +1,361 @@
+# Chapter 3: System Design, Impact Analysis, and Project Management
+
+---
+
+## 3.1 Final Specifications and Requirements
+
+### 3.1.1 System Overview
+
+This chapter defines the final specifications and engineering requirements of the proposed hybrid crowd density estimation system. The system is conceived as a lightweight, privacy-preserving, and edge-deployable solution that employs a learned routing mechanism to dynamically dispatch input images to one of two specialist density estimators: LCDNet for sparse scenes, and a knowledge-distilled MobileCount model for dense scenes. A MobileNetV2-based binary classifier serves as the routing module. The complete pipeline is self-contained on the edge device and does not depend on continuous cloud connectivity.
+
+### 3.1.2 Functional Requirements
+
+The system must fulfil the following functional requirements:
+
+**FR-1: Real-Time Crowd Density Estimation.** The system shall process incoming image frames and produce per-pixel density maps from which an estimated crowd count can be derived. Processing must proceed at a rate suitable for practical near-real-time monitoring.
+
+**FR-2: Adaptive Scene Routing.** A routing classifier shall categorise each input image as depicting a sparse or dense crowd scene and dispatch it to the corresponding density estimator. The routing decision shall be made without human intervention.
+
+**FR-3: Dual-Path Density Estimation.** Two lightweight density estimation models shall be maintained: one optimised for sparse scenes (LCDNet) and one optimised for dense scenes (MobileCount, enhanced via knowledge distillation from CSRNet). Only one model shall execute per image during inference.
+
+**FR-4: Privacy-Preserving Output.** The system shall output density maps that capture the spatial distribution and estimated count of individuals without storing, transmitting, or processing any biometrically identifiable features. Raw image frames shall not be transmitted off-device.
+
+**FR-5: Edge Deployment Compatibility.** All pipeline components shall execute on low-power edge hardware (e.g., NVIDIA Jetson Nano) without requiring cloud offloading during inference.
+
+**FR-6: Cross-Dataset Generalisability.** The system shall be capable of operating across diverse crowd scenarios and multiple benchmark datasets without requiring substantial dataset-specific retraining.
+
+### 3.1.3 Non-Functional Requirements
+
+**NFR-1: Computational Efficiency.** The total deployed model footprint, across all three components (router, LCDNet, MobileCount), shall be minimised to permit operation within the memory and power constraints of ultra-low-power edge hardware.
+
+**NFR-2: Modularity.** The system architecture shall be modular, enabling independent updates or replacement of the router, sparse specialist, or dense specialist without requiring retraining of the entire pipeline.
+
+**NFR-3: Reproducibility.** All training scripts, configuration files, and preprocessing routines shall be version-controlled and documented to ensure full reproducibility of the pipeline.
+
+**NFR-4: Regulatory Compliance.** The system shall be designed in accordance with applicable data-protection regulations, including the General Data Protection Regulation (GDPR) [Council of the European Union, 2016], by ensuring that no personal data is processed or retained beyond the scope of density map generation.
+
+**NFR-5: Maintainability.** The codebase shall follow standard software engineering practices, including modular decomposition and documented interfaces, to facilitate future extensions such as quantisation, hardware-specific optimisation, or additional model variants.
+
+### 3.1.4 Dataset and Training Requirements
+
+The system shall be trained and primarily evaluated on the NWPU-Crowd dataset [Wang et al., 2020], which provides a large-scale and diverse collection of annotated crowd images spanning a wide range of scene densities. Cross-dataset evaluation shall be conducted on ShanghaiTech Parts A and B [Zhang et al., 2016] to assess generalisation. Ground-truth density maps are generated using adaptive Gaussian kernels with sigma values derived from the k-nearest-neighbour distances between annotated head positions, following the methodology of Zhang et al. [2016]. All input images are resized to a standard resolution of 384×384 for density estimation, and 224×224 for the routing classifier, with standard ImageNet normalisation applied throughout.
+
+### 3.1.5 Hardware Target
+
+The primary deployment target is the NVIDIA Jetson Nano, a single-board computer equipped with a 128-core Maxwell GPU, quad-core ARM Cortex-A57 CPU, and 4 GB LPDDR4 memory, operating within a 5–10 W power envelope [NVIDIA, 2019]. This device is representative of the class of ultra-low-power embedded platforms for which the system is designed. Additional hardware targets considered in the broader design include Raspberry Pi and comparable ARM-based single-board computers without dedicated GPU acceleration.
+
+---
+
+## 3.2 Societal Impact
+
+The proposed system is designed to address a critical gap in the deployment of crowd monitoring technology: the inability of resource-constrained organisations to access accurate, real-time crowd density analysis without relying on costly centralised cloud infrastructure. By enabling advanced computer vision on edge devices, the system democratises access to intelligent crowd monitoring across a broader range of deployments, including those in regions or institutions with limited computational budgets.
+
+### 3.2.1 Public Safety and Emergency Response
+
+Traditional crowd monitoring systems rely on centralised cloud computing, which introduces latency, creates privacy vulnerabilities, and depends on reliable internet connectivity. The proposed hybrid edge-based system eliminates these dependencies by performing all inference on-device. This design makes the system particularly well-suited for high-stakes public safety applications.
+
+**Event Management:** Organisers of festivals, concert venues, and sports stadiums can deploy the system on edge devices to monitor crowd density in real-time and predict when a venue will approach dangerous congestion levels before conditions escalate into a safety hazard. The dual-path routing design ensures that both sparse and dense crowd conditions are handled appropriately by the most suitable specialist model.
+
+**Emergency Evacuation:** Rapid crowd density assessment significantly contributes to the coordination of evacuation procedures during emergencies. The edge-based design ensures continued operation when network infrastructure is compromised, eliminating dependence on cloud connectivity during critical moments. The resulting spatial density maps provide actionable spatial information to guide evacuation flows.
+
+**Urban Infrastructure Planning:** Municipal governments can use historical density records to improve the design of public transportation systems, pedestrian infrastructure, and allocation of security resources. The portability of the edge-based architecture enables low-cost deployment across a wide range of public spaces without requiring expensive dedicated hardware.
+
+### 3.2.2 Data Sovereignty and Privacy Preservation
+
+The edge-first design of the system directly addresses growing societal concerns around surveillance, data sovereignty, and personal privacy. By processing all video data locally on the edge device and transmitting only abstract density maps rather than raw video streams, the system avoids the creation of identifiable data records. Density map outputs encode statistical spatial distributions of crowd presence without retaining or exposing individual biometric information, making the system compliant by design with the principles of data minimisation and purpose limitation enshrined in the GDPR [Council of the European Union, 2016].
+
+This privacy-preserving mechanism is particularly valuable in sensitive deployment contexts:
+
+**Healthcare Facilities:** Monitoring waiting room occupancy and patient flow patterns without recording identifiable faces aligns with healthcare data protection requirements such as HIPAA and supports more equitable resource allocation.
+
+**Educational Institutions:** Schools and universities can monitor campus occupancy trends to improve safety planning without compromising the privacy rights of students and staff.
+
+**Public Spaces:** Municipalities can gather crowd analytics to support urban planning without constructing large-scale surveillance databases that pose civil liberties risks.
+
+### 3.2.3 Accessibility and Digital Equity
+
+The resource efficiency of the hybrid architecture extends the reach of sophisticated crowd monitoring to organisations that would otherwise be excluded by cost. The lightweight deployed models allow the system to run on commercially available edge hardware rather than expensive GPU servers or cloud subscriptions. This is particularly significant for:
+
+**Small-Scale Venues:** Community centres, places of worship, and small businesses can deploy occupancy monitoring for safety management without substantial capital investment.
+
+**Developing Regions:** Urban centres with constrained resources can access intelligent crowd monitoring without dependence on high-speed internet connectivity or cloud computing, which may be unavailable or prohibitively expensive.
+
+**Research and Education:** The open-source codebase and modular design provide a practical platform for education in computer vision, deep learning, and edge deployment principles.
+
+---
+
+## 3.3 Environmental Impact
+
+The computational cost of deep learning models has attracted increasing scrutiny regarding the environmental footprint of AI systems [Strubell et al., 2019]. Large-scale models are energy-intensive to train, and inference at scale contributes meaningfully to cumulative carbon emissions. The architectural efficiency and adaptive resource management of the proposed system offer a substantive response to these concerns.
+
+### 3.3.1 Computational and Energy Efficiency
+
+The hybrid routing methodology reduces average computational cost relative to deploying a single large model for every input. The core efficiency gain arises from two complementary mechanisms:
+
+**Model Lightness:** The deployed density estimators — LCDNet and the knowledge-distilled MobileCount — are both designed to operate with a fraction of the memory and computation required by heavier alternatives such as CSRNet. LCDNet achieves this through depthwise separable convolutions, which factorize standard convolutions into depthwise and pointwise components, significantly reducing both parameter count and arithmetic operations [Howard et al., 2017]. MobileCount similarly leverages MobileNetV2's inverted residual structure with linear bottlenecks [Sandler et al., 2018] to minimise computation.
+
+**Adaptive Computation:** The routing mechanism ensures that computationally lighter inference is applied to scenes that do not require heavier processing. Sparse scenes, which constitute a meaningful proportion of real-world deployments, are handled by LCDNet, which is architecturally less demanding than MobileCount. This avoids the energy overhead of unnecessarily running the denser model uniformly across all inputs.
+
+**Memory Bandwidth Reduction:** Smaller model sizes reduce the volume of memory transfers required during inference. Since memory access is a primary driver of energy consumption in edge GPU architectures [Sze et al., 2017], compactness directly translates to more energy-efficient operation.
+
+### 3.3.2 Training and Lifecycle Considerations
+
+The training pipeline has been designed with efficiency in mind. Rather than training each component independently from scratch, the system employs knowledge distillation, where the dense-scene specialist (MobileCount) is initialised from a pretrained checkpoint and fine-tuned for a limited number of epochs using CSRNet's outputs as auxiliary supervision targets. This warm-start approach substantially reduces training compute relative to training from random initialisation. Following distillation, the teacher network (CSRNet) is discarded and plays no further role in the deployed pipeline, ensuring that the final runtime footprint reflects only the lightweight components.
+
+### 3.3.3 Quantitative Environmental Accountability
+
+In alignment with emerging best practices for responsible AI development [Schwartz et al., 2020], this system's environmental footprint will be characterised in future work through the following measurements:
+
+- **Energy per Inference:** Measurement of per-inference energy consumption across the sparse and dense paths on target edge hardware, quantifying the marginal cost of routing.
+- **Carbon Footprint Estimation:** Integration of measured energy consumption with local grid carbon intensity factors to estimate CO₂ equivalents per inference cycle.
+- **Comparative Assessment:** Contrasting the hybrid system's energy profile against single-model baselines applied uniformly, to quantify the environmental gain attributable to routing.
+- **Lifecycle Assessment:** Accounting for training energy, deployment facility overheads, and operational energy across a standard deployment period, following the framework proposed by Bannour et al. [2021].
+
+---
+
+## 3.4 Ethical Issues
+
+The deployment of automated crowd monitoring systems raises a range of ethical concerns that must be addressed both at the design level and within the operational protocols governing system use. This section identifies the principal ethical dimensions relevant to the proposed system and the design choices made to mitigate associated risks.
+
+### 3.4.1 Privacy and Surveillance Ethics
+
+The most significant ethical concern in crowd monitoring is the potential for technology to enable disproportionate surveillance. Automated systems that continuously observe public or semi-public spaces gather power that can be misused to monitor, track, or profile individuals or groups [Zuboff, 2019]. The proposed system addresses this concern through architectural privacy preservation: all inference is performed locally on edge hardware, raw video frames are not transmitted or stored, and system outputs are limited to anonymised density maps. These maps encode aggregate spatial statistics but are not capable of identifying individuals, tracking trajectories, or supporting behavioural profiling.
+
+Nonetheless, it is acknowledged that even aggregate density data could, in some contexts, be combined with other sources to infer information about individuals or communities. Responsible deployment therefore requires institutional policies governing data retention, access control, and permissible uses of system outputs, in addition to technical safeguards.
+
+### 3.4.2 Bias and Fairness
+
+Deep learning models trained on publicly available crowd counting datasets may exhibit biases resulting from the demographic composition, geographic origin, and environmental conditions represented in those datasets. Existing benchmark datasets such as NWPU-Crowd and ShanghaiTech predominantly capture scenes from East Asian urban environments [Wang et al., 2020; Zhang et al., 2016], which may limit the generalisability of trained models to other cultural or geographic contexts. It is possible that the model's density estimation accuracy may vary systematically across different crowd compositions, clothing styles, or environmental settings.
+
+This thesis acknowledges this limitation explicitly. The system is evaluated only on available benchmark datasets and does not claim universal accuracy across all deployment contexts. Future work should incorporate geographically and demographically diverse training and evaluation data to address this gap.
+
+### 3.4.3 Accountability and Transparency
+
+Automated crowd monitoring systems that inform public safety decisions must be accompanied by clear mechanisms of accountability. Decision-makers relying on system outputs must understand the nature and limitations of the technology. The modular, documented architecture of the proposed system supports transparency by making clear which components participate in each inference step and under what conditions. Open-source release of the codebase and training pipeline further supports external scrutiny and reproducibility [Jobin et al., 2019].
+
+The binary routing decision — sparse versus dense — introduces an additional layer of accountability consideration: if the router misclassifies a scene (e.g., routing a very dense scene to LCDNet), the resulting density estimate may be substantially inaccurate. System operators should be informed of this routing mechanism and its limitations, and deployment protocols should account for scenarios in which router confidence is low.
+
+### 3.4.4 Consent and Public Space Monitoring
+
+Monitoring individuals in public spaces raises questions around informed consent that do not arise in purely private deployments. In many jurisdictions, passive observation of public spaces is legally permissible without explicit individual consent, provided that no personally identifiable information is recorded. The proposed system's design, which produces only non-identifying aggregate density maps, is intended to fall within this permissible category. However, deployment decisions remain context-dependent, and operators are advised to consult applicable legal frameworks and, where appropriate, to inform the public of monitoring activities through signage or public disclosure.
+
+---
+
+## 3.5 Standards
+
+The design and deployment of the proposed system is guided by a set of recognised international standards and regulatory frameworks. Adherence to these standards ensures compatibility, interoperability, reproducibility, and compliance with legal obligations.
+
+### 3.5.1 Data Protection Standards
+
+**General Data Protection Regulation (GDPR) [Council of the European Union, 2016]:** The GDPR establishes the legal framework for data protection in the European Union and is widely adopted as an international reference standard. The system's edge-based, raw-data-free design is consistent with the GDPR's principles of data minimisation (only the minimum necessary data is processed), purpose limitation (data is processed only for the stated density estimation purpose), and storage limitation (raw frames are not persisted). The use of density maps rather than video recordings as system outputs is specifically designed to avoid the processing of personal data as defined under GDPR Article 4.
+
+**NIST Privacy Framework [NIST, 2020]:** The National Institute of Standards and Technology Privacy Framework provides a complementary voluntary framework for managing privacy risks. The proposed system aligns with the framework's core functions of Identify (understand privacy risks associated with crowd monitoring), Govern (establish operational policies governing data use), Control (limit processing to anonymised outputs), and Communicate (ensure transparency to affected individuals where applicable).
+
+### 3.5.2 AI Ethics and Responsible AI Standards
+
+**IEEE Ethically Aligned Design [IEEE, 2019]:** The IEEE's foundational document on ethically aligned design for autonomous and intelligent systems articulates principles of human wellbeing, transparency, accountability, and competence. The system's design prioritises transparency through open-source documentation, accountability through modular architecture, and wellbeing through privacy preservation.
+
+**ISO/IEC JTC 1/SC 42 (Artificial Intelligence) Standards:** The ISO/IEC SC 42 family of standards addresses AI terminology, trustworthiness, robustness, and bias [ISO/IEC TR 24028:2020]. These standards provide a framework for assessing the reliability of AI systems and their potential societal impacts, and are referenced in the design of the evaluation methodology.
+
+### 3.5.3 Software Engineering Standards
+
+**IEEE 829 (Software Test Documentation):** The evaluation methodology follows principles from IEEE 829, including documentation of test objectives, test environments, and evaluation metrics (MAE, MSE) to ensure that evaluation results are reproducible and interpretable.
+
+**ISO/IEC 25010 (Systems and Software Quality Requirements):** The system's non-functional requirements — including maintainability, modularity, portability, and efficiency — are framed in accordance with the quality characteristics defined in ISO/IEC 25010, which provides a comprehensive model for software product quality.
+
+### 3.5.4 Edge Computing and Embedded Systems Standards
+
+**AUTOSAR and POSIX Standards:** The Jetson Nano target platform runs a Linux-based operating system, providing POSIX-compliant system interfaces. Software development follows POSIX conventions to ensure portability across Linux-based edge devices.
+
+**ONNX (Open Neural Network Exchange):** Where applicable, model export to the ONNX format [Linux Foundation, 2017] is considered to facilitate interoperability across hardware accelerators and inference frameworks, consistent with the system's non-functional requirement for modularity and deployability.
+
+---
+
+## 3.6 Project Management Plan
+
+### 3.6.1 Team Organisation and Responsibilities
+
+The project was executed by a team in which responsibilities were distributed according to individual competencies. Primary areas of responsibility included dataset acquisition and preprocessing, model implementation (LCDNet, MobileCount, CSRNet, routing classifier), training script development, evaluation and benchmarking, and documentation and thesis writing. All team members contributed to code review and integration testing.
+
+Regular weekly meetings were conducted to allocate tasks, monitor progress, address technical issues, and review intermediate deliverables. The project supervisor provided guidance and reviewed progress at scheduled intervals throughout the development cycle.
+
+### 3.6.2 Development Methodology
+
+The project followed an iterative, milestone-driven development methodology structured into four principal phases:
+
+**Phase 1 — Foundation and Data Preparation:** Setup of the development environment, dataset acquisition (NWPU-Crowd, ShanghaiTech), preprocessing pipeline implementation, and initial baseline experiments with LCDNet on the ShanghaiTech dataset.
+
+**Phase 2 — Model Implementation and Individual Training:** Independent training of the routing classifier (MobileNetV2), LCDNet on the NWPU-Crowd sparse subset, and MobileCount on the NWPU-Crowd dense subset using the standard training pipeline.
+
+**Phase 3 — Knowledge Distillation and System Integration:** Implementation of the CSRNet-to-MobileCount knowledge distillation pipeline, integration of all three components into the hybrid inference system, and implementation of both hard-routing and soft-fusion inference modes.
+
+**Phase 4 — Evaluation, Analysis, and Documentation:** Comprehensive evaluation on the NWPU-Crowd validation set and ShanghaiTech cross-dataset benchmarks, threshold sweep analysis, router calibration assessment, failure case analysis, and thesis writing.
+
+### 3.6.3 Version Control and Reproducibility
+
+A Git repository hosted on GitHub was used throughout the project for version control, collaborative development, and issue tracking. All training scripts, configuration files, preprocessing routines, and evaluation scripts are maintained within the repository under a clearly documented directory structure. Checkpoint files are externally stored and linked via the repository's documentation to ensure that results can be fully reproduced. This approach follows established practices for reproducible machine learning research [Pineau et al., 2021].
+
+### 3.6.4 Project Timeline
+
+| Phase | Activities | Duration |
+|---|---|---|
+| Phase 1 | Environment setup, dataset preparation, baseline experiments | Weeks 1–4 |
+| Phase 2 | Routing classifier training, LCDNet fine-tuning, MobileCount training | Weeks 5–9 |
+| Phase 3 | Knowledge distillation, system integration, inference pipeline | Weeks 10–13 |
+| Phase 4 | Evaluation, analysis, documentation, thesis writing | Weeks 14–18 |
+
+### 3.6.5 Tools and Infrastructure
+
+The project was developed using the following tools and infrastructure:
+
+- **Programming Language:** Python 3.x
+- **Deep Learning Framework:** PyTorch 2.x with torchvision
+- **Hardware:** NVIDIA GeForce RTX 3050 (training), NVIDIA Jetson Nano (target deployment platform)
+- **Version Control:** Git / GitHub
+- **Documentation:** Markdown, LaTeX
+- **Computational Analysis:** thop (FLOPs estimation), fvcore, scipy
+
+---
+
+## 3.7 Risk Management
+
+A structured risk assessment was conducted to identify, evaluate, and mitigate risks associated with the technical, ethical, and operational dimensions of the project. Risks are characterised by likelihood (Low / Medium / High) and potential impact (Low / Medium / High).
+
+### 3.7.1 Technical Risks
+
+**Risk T-1: Router Misclassification**
+*Description:* The routing classifier may incorrectly label a dense scene as sparse (or vice versa), directing the image to the less appropriate density estimator and degrading the overall count estimate.
+*Likelihood:* Medium. *Impact:* High.
+*Mitigation:* The router is trained with a balanced dataset and evaluated using accuracy and Expected Calibration Error (ECE) metrics. A configurable routing threshold (`p*`) is provided to allow operators to tune the decision boundary based on deployment context, trading off sparse-accuracy against dense-accuracy [Guo et al., 2017].
+
+**Risk T-2: Density Model Saturation at Extreme Counts**
+*Description:* Both lightweight density estimators may undercount in extreme-density scenes (very large crowd counts) because their architectural capacity is limited relative to heavier models.
+*Likelihood:* Medium. *Impact:* Medium.
+*Mitigation:* This limitation is acknowledged in the system design. The knowledge distillation pipeline from CSRNet partially mitigates this for MobileCount. Future work may address this through multi-scale crops or Bayesian loss formulations [Ma et al., 2019].
+
+**Risk T-3: Dataset Domain Mismatch**
+*Description:* Models trained on NWPU-Crowd may underperform on datasets captured in different geographic, environmental, or demographic contexts.
+*Likelihood:* Medium. *Impact:* Medium.
+*Mitigation:* Cross-dataset evaluation on ShanghaiTech is included as a standard component of the evaluation plan. Domain adaptation techniques are identified as future work [Wang et al., 2019].
+
+**Risk T-4: Edge Hardware Compatibility**
+*Description:* PyTorch models may encounter compatibility or performance issues on specific edge hardware configurations.
+*Likelihood:* Low. *Impact:* Medium.
+*Mitigation:* The system targets POSIX-compliant Linux platforms commonly supported by PyTorch. ONNX export is identified as a fallback for environments requiring alternative inference frameworks.
+
+**Risk T-5: Knowledge Distillation Instability**
+*Description:* The distillation training may diverge or converge to a suboptimal solution if loss weights or learning rate schedules are poorly configured.
+*Likelihood:* Low. *Impact:* High.
+*Mitigation:* The distillation loss uses a weighted combination of ground-truth density supervision, teacher-to-student map matching, and count-level L1 regularisation. Cosine annealing is applied to the learning rate schedule, and gradient clipping is employed to prevent training instability [Hinton et al., 2015].
+
+### 3.7.2 Ethical and Regulatory Risks
+
+**Risk E-1: Misuse of Density Outputs**
+*Description:* Density map outputs, while non-identifying, could be combined with other data sources in ways that enable indirect identification or profiling of crowd members.
+*Likelihood:* Low. *Impact:* High.
+*Mitigation:* Deployment guidelines specify that density map outputs should be subject to access control policies and should not be combined with other datasets in ways that could enable re-identification. The system does not provide trajectory tracking or temporal linking capabilities.
+
+**Risk E-2: Algorithmic Bias Across Demographics**
+*Description:* The system may exhibit differential accuracy across crowd demographics or geographic contexts not represented in the training data.
+*Likelihood:* Medium. *Impact:* Medium.
+*Mitigation:* The limitation is disclosed transparently in system documentation. Evaluation across multiple datasets (NWPU-Crowd, ShanghaiTech) provides partial evidence of generalisation. Expansion of training data diversity is identified as future work.
+
+### 3.7.3 Operational Risks
+
+**Risk O-1: Hardware Availability and Procurement Delays**
+*Description:* Access to target edge hardware (Jetson Nano) may be delayed or limited, affecting the timeline of hardware deployment experiments.
+*Likelihood:* Low. *Impact:* Medium.
+*Mitigation:* Core experiments are conducted on the development GPU (RTX 3050), with edge hardware deployment treated as a validation step. Software is designed to execute on CPU if GPU is unavailable.
+
+**Risk O-2: Dataset Access and Licensing**
+*Description:* Access to benchmark datasets may be subject to terms of use that limit redistribution or commercial application.
+*Likelihood:* Low. *Impact:* Low.
+*Mitigation:* All datasets used (NWPU-Crowd, ShanghaiTech) are publicly available research benchmarks with documented terms of use permitting academic research. Preprocessing scripts generate derived density maps that do not constitute redistribution of raw data.
+
+---
+
+## 3.8 Economic Analysis
+
+### 3.8.1 Cost of Development
+
+The development of the proposed hybrid crowd density estimation system was conducted within a university research context, with costs primarily attributable to researcher time and computational resources. The principal development hardware — an NVIDIA GeForce RTX 3050 GPU — was used for all model training and evaluation. Cloud computing costs were not incurred, as all training was performed locally.
+
+Target deployment hardware costs are modest. Jetson Nano units are commercially available at a price point of approximately USD 100–150 per unit [NVIDIA, 2019], making large-scale deployment economically feasible for organisations with limited budgets. This compares favourably with cloud-based alternatives, which incur ongoing subscription costs that scale with inference volume.
+
+### 3.8.2 Deployment Cost Model
+
+The economic advantage of the edge-based design becomes more pronounced at scale. A comparative cost model can be framed as follows:
+
+**Cloud-Based Alternative:** Organisations routing all video streams to cloud inference services incur per-inference API costs in addition to data transmission costs (bandwidth). For high-frequency monitoring — e.g., thirty frames per second across multiple cameras — these costs accumulate substantially over time. Furthermore, cloud-based systems require robust network connectivity, the absence of which introduces additional operational risk and cost.
+
+**Proposed Edge-Based Hybrid:** Once the edge device is procured and the system is deployed, inference costs are effectively limited to the device's power consumption (5–10 W for the Jetson Nano [NVIDIA, 2019]). There are no recurring API fees, no bandwidth costs, and no dependence on cloud availability. The total cost of ownership over a deployment lifetime is therefore significantly lower than equivalent cloud-based alternatives, particularly in high-frequency or remote deployment contexts.
+
+### 3.8.3 Return on Investment Considerations
+
+The economic return from deploying an accurate crowd density estimation system is realised across several application domains:
+
+**Public Safety:** Reducing the likelihood of crowd-related incidents through early warning systems reduces the economic and social cost of crowd disasters, which can be catastrophic [Helbing and Mukerji, 2012].
+
+**Event Management:** Accurate real-time crowd distribution data enables optimised staffing, resource allocation, and venue management, reducing operational costs and improving visitor experience.
+
+**Urban Planning:** Longitudinal crowd density data informs more efficient design of public infrastructure, potentially yielding significant long-term savings in transportation, security, and emergency services.
+
+**Healthcare and Education:** Occupancy monitoring in hospitals and campuses reduces manual counting effort and supports automated compliance with safety regulations, freeing staff time for higher-value activities.
+
+### 3.8.4 Scalability and Commercial Viability
+
+The modular architecture of the system supports horizontal scaling: additional edge devices can be deployed at additional locations without changes to the core software, and the system can be updated by replacing individual model checkpoints without redeploying the entire pipeline. This commercial-grade modularity [Bass et al., 2003], combined with the open-source codebase, lowers the barrier to adoption by third parties and supports potential commercialisation through integration into existing smart city or event management platforms.
+
+Knowledge distillation, employed to improve the dense-scene specialist's accuracy without increasing deployment cost, demonstrates a commercially attractive pattern: performance improvements are realised through training-time investment (the teacher model, CSRNet), while the deployed system retains only the lightweight student. This pattern is scalable to future improvements — stronger teacher models can be used to further improve the student without altering the deployment footprint.
+
+---
+
+## References
+
+Bass, L., Clements, P., & Kazman, R. (2003). *Software Architecture in Practice* (2nd ed.). Addison-Wesley.
+
+Bannour, G., Ghannay, S., Névéol, A., & Ligozat, A. L. (2021). Evaluating the carbon footprint of NLP methods: A survey and analysis of existing tools. *Proceedings of the Second Workshop on Simple and Efficient Natural Language Processing*, 11–23.
+
+Council of the European Union. (2016). *Regulation (EU) 2016/679 of the European Parliament and of the Council (General Data Protection Regulation)*. Official Journal of the European Union.
+
+Guo, C., Pleiss, G., Sun, Y., & Weinberger, K. Q. (2017). On calibration of modern neural networks. *Proceedings of the 34th International Conference on Machine Learning (ICML)*, 1321–1330.
+
+Helbing, D., & Mukerji, P. (2012). Crowd disasters as systemic failures: Analysis of the Love Parade disaster. *EPJ Data Science*, 1(1), 7.
+
+Hinton, G., Vinyals, O., & Dean, J. (2015). Distilling the knowledge in a neural network. *NIPS Workshop on Deep Learning and Representation Learning*.
+
+Howard, A. G., Zhu, M., Chen, B., Kalenichenko, D., Wang, W., Weyand, T., ... & Adam, H. (2017). MobileNets: Efficient convolutional neural networks for mobile vision applications. *arXiv preprint arXiv:1704.04861*.
+
+IEEE. (2019). *Ethically Aligned Design: A Vision for Prioritizing Human Well-being with Autonomous and Intelligent Systems* (1st ed.). IEEE.
+
+ISO/IEC TR 24028:2020. (2020). *Information Technology — Artificial Intelligence — Overview of Trustworthiness in Artificial Intelligence*. International Organization for Standardization.
+
+ISO/IEC 25010:2011. (2011). *Systems and Software Engineering — Systems and Software Quality Requirements and Evaluation (SQuaRE)*. International Organization for Standardization.
+
+Jobin, A., Ienca, M., & Vayena, E. (2019). The global landscape of AI ethics guidelines. *Nature Machine Intelligence*, 1(9), 389–399.
+
+Linux Foundation. (2017). *Open Neural Network Exchange (ONNX)*. https://onnx.ai
+
+Ma, Z., Wei, X., Hong, X., & Gong, Y. (2019). Bayesian loss for crowd count estimation with point supervision. *Proceedings of the IEEE/CVF International Conference on Computer Vision (ICCV)*, 6142–6151.
+
+NIST. (2020). *NIST Privacy Framework: A Tool for Improving Privacy Through Enterprise Risk Management* (Version 1.0). National Institute of Standards and Technology.
+
+NVIDIA. (2019). *Jetson Nano Developer Kit*. NVIDIA Corporation. https://developer.nvidia.com/embedded/jetson-nano-developer-kit
+
+Pineau, J., Vincent-Lamarre, P., Sinha, K., Larivière, V., Beygelzimer, A., d'Alché-Buc, F., ... & Larochelle, H. (2021). Improving reproducibility in machine learning research. *Journal of Machine Learning Research*, 22(1), 7459–7478.
+
+Sandler, M., Howard, A., Zhu, M., Zhmoginov, A., & Chen, L. C. (2018). MobileNetV2: Inverted residuals and linear bottlenecks. *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 4510–4520.
+
+Schwartz, R., Dodge, J., Smith, N. A., & Etzioni, O. (2020). Green AI. *Communications of the ACM*, 63(12), 54–63.
+
+Strubell, E., Ganesh, A., & McCallum, A. (2019). Energy and policy considerations for deep learning in NLP. *Proceedings of the 57th Annual Meeting of the Association for Computational Linguistics (ACL)*, 3645–3650.
+
+Sze, V., Chen, Y. H., Yang, T. J., & Emer, J. S. (2017). Efficient processing of deep neural networks: A tutorial and survey. *Proceedings of the IEEE*, 105(12), 2295–2329.
+
+Wang, Q., Gao, J., Lin, W., & Li, X. (2020). NWPU-Crowd: A large-scale benchmark for crowd counting and localization. *IEEE Transactions on Pattern Analysis and Machine Intelligence*, 43(6), 2141–2149.
+
+Wang, Y., Hou, J., Hou, X., & Chau, L. P. (2019). A self-training approach for point-supervised object detection and counting in crowds. *IEEE Transactions on Image Processing*, 30, 2876–2887.
+
+Zhang, Y., Zhou, D., Chen, S., Gao, S., & Ma, Y. (2016). Single-image crowd counting via multi-column convolutional neural network. *Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR)*, 589–597.
+
+Zuboff, S. (2019). *The Age of Surveillance Capitalism: The Fight for a Human Future at the New Frontier of Power*. PublicAffairs.

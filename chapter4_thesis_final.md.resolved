@@ -1,0 +1,616 @@
+# Chapter 4: Proposed Methodology
+
+## 4.1 Design Process and Methodology Overview
+
+The hybrid crowd density estimation system was developed through a structured five-stage design process, in which each stage addresses a specific research objective and builds progressively upon the insights gained in the preceding stage. This systematic methodology ensures that design decisions are made on an empirical basis, validated against established research objectives at each transition between phases. The overall design process is illustrated in Figure 4.1.
+
+---
+
+**[Figure 4.1 — Methodology Overview Flowchart]**
+*Required figure. Generate a vertical five-phase flow diagram with the following labelled boxes connected by downward arrows:*
+*Phase 1: Requirement Analysis and Dataset Selection (blue)*
+*Phase 2: Architecture Design and Model Selection (blue)*
+*Phase 3: Preprocessing Pipeline Design (green)*
+*Phase 4: Training Strategy Design, including Knowledge Distillation sub-phase (green/orange)*
+*Phase 5: System Integration and Evaluation (purple)*
+*Add a feedback arrow from Phase 5 back to Phase 1 labelled "Iterative Refinement". Each box should include a one-line description of its key deliverable.*
+
+---
+
+### 4.1.1 Phase 1: Requirement Analysis and Dataset Selection
+
+The preliminary phase of the research methodology was concentrated on developing a thorough understanding of the problem space and identifying appropriate datasets to support the training and evaluation of the proposed system. The selection criteria were designed to ensure that the chosen datasets reflect the diversity and complexity of real-world crowd monitoring scenarios.
+
+Based on the deployment constraints and the scope of the problem, a number of system requirements were established. The proposed system must be capable of producing accurate density estimates across a wide range of crowd densities, including sparse scenarios with fewer than 100 people and extreme-density scenarios exceeding 5,000. Beyond accuracy, the system must be computationally efficient, enabling inference at a throughput that is compatible with edge hardware such as the NVIDIA Jetson Nano. Privacy-preserving operation requires that all processing be performed on-device, without transmitting raw video frames to centralised servers. Furthermore, the architecture must be modular and scalable, permitting deployment across networks of cameras without prohibitive increases in computational overhead.
+
+The selection of datasets was governed by the requirement that they collectively represent the full range of crowd density conditions encountered in practice. The following criteria were applied: a dataset must exhibit diversity in crowd density, spanning both sparse and highly congested scenes; point-level annotations must be of sufficient quality to support accurate density map generation; the dataset must provide enough training samples to ensure model convergence; and the dataset must be publicly available to enable reproducibility and direct comparison with published methods.
+
+**Selected Datasets:**
+- **NWPU-Crowd [Wang et al., 2020]:** 5,109 images, 2,133,375 head annotations, crowd counts ranging from 0 to 20,033 per image. Selected as the primary training and evaluation benchmark for all three deployed model components. Diverse in scene type, lighting condition, and camera perspective.
+- **ShanghaiTech Part A [Zhang et al., 2016]:** 482 images (300 train, 182 test), 241,677 annotations, crowd counts ranging from 33 to 3,139. Used exclusively for cross-dataset generalisation evaluation in this work.
+- **ShanghaiTech Part B [Zhang et al., 2016]:** 716 images (400 train, 316 test), 88,488 annotations, crowd counts ranging from 9 to 578. Also reserved for cross-dataset generalisation evaluation.
+
+No samples from ShanghaiTech Part A or Part B are used in any stage of training, validation, or hyperparameter selection; these datasets serve exclusively to evaluate zero-shot generalisation.
+
+---
+
+### 4.1.2 Phase 2: Architecture Design and Model Selection
+
+Following the requirements analysis, the architecture design phase addressed the fundamental accuracy-efficiency trade-off in crowd density estimation by introducing a hybrid architecture capable of adaptive model selection based on the complexity of the input scene.
+
+**Architectural Reasoning:**
+
+The central challenge of crowd density estimation is balancing accuracy against computational efficiency. Lightweight models support rapid inference but exhibit insufficient representational capacity for highly congested scenes. Computationally intensive models provide high accuracy on dense scenes but are impractical for edge deployment and incur unnecessary overhead on sparse inputs. Conventional approaches resolve this tension by pre-selecting a single model, leading to sub-optimal performance across the full density spectrum. The proposed hybrid architecture overcomes this limitation by dynamically selecting between two specialised lightweight models — one optimised for sparse scenes and one for dense scenes — based on a learned assessment of scene complexity.
+
+**Architectural Components:**
+
+**Component 1: LCDNet (Lightweight Crowd Density Network).** LCDNet is the efficiency-optimised element of the hybrid system, designed for sparse-to-medium density scenes (ground-truth count ≤ 100). The architecture employs an encoder-decoder topology with depthwise separable convolutions, which achieve an approximately 8× reduction in parameter count relative to standard convolutional architectures of equivalent representational depth, while maintaining expressive capability. Skip connections link corresponding encoder and decoder stages, preserving fine-grained spatial information across the downsampling hierarchy. LCDNet produces full-resolution density maps at the same spatial dimensions as the input image.
+
+**Component 2: MobileCount (Deployed Dense Specialist — Knowledge-Distilled).** MobileCount is the accuracy-oriented element of the hybrid system, designed for dense crowd scenes (ground-truth count > 100). It employs the first 13 feature layers of a pretrained MobileNetV2 backbone as the encoder, providing computationally efficient hierarchical feature extraction that generalises well due to ImageNet pretraining. Three dilated convolution context blocks (dilation rate = 2) extract multi-scale contextual information without reducing spatial resolution. A skip-connection fusion module combines encoder representations at two resolution scales to improve density map accuracy. The output is a density map at 1/8 of the input resolution; the count is derived by spatial summation.
+
+MobileCount is deployed in a **knowledge-distilled** form. Prior to deployment, it is trained to match the density map outputs of a high-capacity CSRNet teacher through the knowledge distillation procedure described in Phase 4.5. The teacher is discarded after distillation and is never included in the deployed pipeline.
+
+**Component 3: CSRNet (Knowledge Distillation Teacher — Not Deployed).** CSRNet is used exclusively as a training-time teacher in the knowledge distillation phase. It consists of the first ten convolutional layers of VGG-16 as a pretrained frontend and six dilated convolutional layers (dilation rates: 2, 2, 2, 4, 4, 4) as the backend density estimator. Its 16.26M parameters make it unsuitable for direct edge deployment; however, its superior density estimation capability on dense scenes is transferred to the lightweight MobileCount student.
+
+**Component 4: MobileNetV2 Routing Classifier.** The routing classifier uses a pretrained MobileNetV2 backbone with a custom two-class fully connected head to classify each input as sparse (count ≤ 100) or dense (count > 100). The routing threshold T = 100 was established on the basis of the NWPU-Crowd density distribution and is consistent with established crowd counting literature distinguishing sparse and dense crowd configurations.
+
+---
+
+### 4.1.3 Phase 3: Preprocessing Pipeline
+
+This phase implements the complete data preprocessing pipeline that transforms raw annotated imagery into standardised training representations through a systematic multi-stage process involving density map generation, data augmentation, and normalisation.
+
+**Stage 1: Density Map Generation:**
+
+Ground-truth continuous density maps are synthesised from discrete head point annotations by placing adaptive Gaussian kernels at each annotated head position. The standard deviation σᵢ of the kernel at annotation i is computed as:
+
+σᵢ = β · d̄ᵢ
+
+where d̄ᵢ is the mean Euclidean distance from head position i to its k = 3 nearest neighbours within the same image, and β = 0.3 is the empirically calibrated scaling coefficient. This adaptive formulation ensures that kernel widths are proportional to local crowd density: narrower kernels in congested regions preserve spatial precision, while wider kernels in sparse regions provide adequate spatial coverage. Mass conservation is enforced throughout: ∫∫ D(x, y) dxdy = N, where N is the total number of annotated heads in the image, enabling ground-truth supervision by pixel-wise regression.
+
+When an image contains only a single annotated person — making nearest-neighbour distance computation undefined — a fixed fallback sigma of 15.0 pixels is applied. All computed sigma values are clipped to the range [4.0, 30.0] pixels to prevent degenerate kernels from producing numerically unstable training signals.
+
+**Stage 2: Data Augmentation:**
+
+To improve model generalisation and mitigate overfitting, the following stochastic augmentation pipeline is applied during training. All geometric transformations are applied identically to both the image and its corresponding density map to preserve pixel-level correspondence:
+1. Random horizontal flip (probability 0.5), applied consistently to image and density map.
+2. Random 384×384 patch crop from a 512×512 rescaled image (probability 0.3).
+3. Photometric perturbation: brightness perturbation (±20%), contrast perturbation (±20%), saturation perturbation (±20%), and hue perturbation.
+
+**Stage 3: Normalisation:**
+
+All images are normalised using ImageNet channel statistics (mean: [0.485, 0.456, 0.406]; standard deviation: [0.229, 0.224, 0.225] for R, G, B channels respectively). This normalisation scheme ensures that the distributions of model inputs are consistent with the weight distributions of the pretrained MobileNetV2 backbones used in both the MobileCount encoder and the routing classifier, facilitating rapid convergence and effective feature transfer.
+
+---
+
+**[Figure 4.2 — Density Map Generation Pipeline]**
+*Required figure. Four-step horizontal illustration:*
+*Step 1: Raw crowd photograph with annotated head positions shown as green dots.*
+*Step 2: Adaptive kernel width calculation — formula σᵢ = 0.3 × d̄ᵢ shown, with distance arrows between 3 nearest annotation neighbours.*
+*Step 3: Gaussian blob placement at each annotation — magnified view of a single kernel.*
+*Step 4: Final continuous density heatmap (warm colourmap, red-orange in dense regions, yellow in sparse). Label "∑ D = N (head count)".*
+*Caption: "Adaptive Gaussian Density Map Generation from Point Annotations."*
+
+---
+
+### 4.1.4 Phase 4: Training Strategy Design
+
+Each model component is trained according to a strategy tailored to its architectural characteristics and its role in the deployed hybrid system.
+
+**LCDNet Training:** LCDNet is trained from random weight initialisation on the NWPU-Crowd sparse training subset (images with ground-truth count ≤ 100). The training objective is pixel-wise mean squared error (MSE) between the predicted and ground-truth density maps. An Adam optimiser is employed with a learning rate of 1×10⁻⁴ and weight decay of 1×10⁻⁵. A ReduceLROnPlateau learning rate scheduler reduces the rate by a factor of 0.5 when the validation loss plateaus for 15 consecutive epochs, facilitating fine-grained convergence in later epochs. Training runs for up to 100 epochs with early stopping triggered after 50 epochs without improvement. Gradient clipping at a maximum norm of 5.0 is applied to prevent training instability.
+
+**MobileCount Baseline Training:** MobileCount is trained on the full NWPU-Crowd training set with direct MSE supervision on 1/8-resolution density maps. An Adam optimiser is used (learning rate = 1×10⁻⁴) with a cosine annealing learning rate schedule. This baseline checkpoint serves as the warm-start initialisation for the knowledge distillation phase.
+
+**Knowledge Distillation — CSRNet Teacher to MobileCount Student:** Following baseline training, MobileCount is refined through knowledge distillation from the frozen CSRNet teacher. The combined distillation loss is:
+
+L_distill = α · MSE(D_student, D_GT) + β · MSE(D_student, D_teacher) + γ · L₁(C_student, C_GT)
+
+where D_student and D_teacher are the student and teacher density map outputs respectively, D_GT is the ground-truth density map, C_student is the student's predicted count (spatial sum of D_student), C_GT is the ground-truth count, and the loss coefficients are α = 0.5, β = 0.5, γ = 0.05. The student is optimised with AdamW (learning rate = 5×10⁻⁵, weight decay = 1×10⁻⁴) with a cosine annealing schedule (η_min = 1×10⁻⁷) for 12 epochs. Gradient clipping at maximum norm 1.0 is applied. The teacher's parameters are frozen throughout (requires_grad = False). At the conclusion of training, the checkpoint with the lowest validation MAE is retained and the teacher is discarded.
+
+**Routing Classifier Training:** The routing classifier is fine-tuned from a pretrained MobileNetV2 backbone using binary cross-entropy loss. The custom classification head (Dropout(p=0.3) → Linear(1280→256) → ReLU → Dropout(p=0.3) → Linear(256→2)) is initialised randomly and trained from scratch. An Adam optimiser is used (learning rate = 1×10⁻⁴, weight decay = 1×10⁻⁵). Training runs for up to 25 epochs with early stopping after 10 epochs without validation accuracy improvement.
+
+---
+
+**[Figure 4.3 — Knowledge Distillation Architecture Diagram]**
+*Required figure. Two-branch diagram:*
+*Top branch (dashed border): Input image → CSRNet Teacher (16.26M params, FROZEN) → D_teacher. Label: "Training only — discarded after distillation."*
+*Bottom branch (solid border): Input image → MobileCount Student (0.884M params, trainable) → D_student.*
+*Centre: Ground Truth D_GT.*
+*Three coloured arrows into a "Combined Loss" box: α·MSE(D_student, D_GT) [green], β·MSE(D_student, D_teacher) [blue], γ·L1(C_student, C_GT) [orange].*
+*Gradient backpropagation arrow points only to the Student. Teacher node has a padlock icon. Show α=0.5, β=0.5, γ=0.05.*
+
+---
+
+### 4.1.5 Phase 5: System Integration and Evaluation
+
+The final phase integrates all three deployed components — the routing classifier, LCDNet, and the knowledge-distilled MobileCount — into a unified inference pipeline and evaluates the resulting system against established benchmarks and standard performance criteria.
+
+**Performance Measures:**
+
+The following standard crowd counting metrics are used to measure model performance throughout:
+
+- **Mean Absolute Error (MAE):** The mean absolute difference between the predicted count and the ground-truth count across all evaluation images. MAE provides an easily interpretable measure of average counting error.
+- **Root Mean Squared Error (RMSE):** The square root of the mean squared counting error. RMSE penalises large individual predictions more heavily than MAE, providing a measure of error variance and the prevalence of outlier predictions.
+- **Inference Latency:** Per-image inference time in milliseconds, measured on an NVIDIA GeForce RTX 3050 after 30 GPU warmup passes and averaged over 30 subsequent evaluation runs.
+- **Routing Accuracy:** The percentage of correctly classified images (sparse vs. dense, as defined by ground-truth count vs. T = 100) on the NWPU-Crowd validation set.
+- **95% Bootstrap Confidence Intervals:** Constructed from 2,000-iteration bootstrap resampling on the 500-image validation set to provide statistically grounded uncertainty estimates for MAE.
+
+**Integration Architecture:**
+
+Based on the system design established in Phase 2, all three components are assembled in the HybridDensityEstimator class. At runtime, each input image is first forwarded to the routing classifier at 224×224 resolution, producing class probabilities [P(sparse), P(dense)]. If P(dense) ≥ p*, the image is forwarded to the MobileCount specialist at 384×384 resolution; otherwise to LCDNet at 384×384 resolution. The selected model generates a density map from which the crowd count is derived by spatial summation. Following training, the routing threshold p* is optimised by a post-hoc sweep over ten candidate values on the validation set, identifying p* = 0.85 as the optimal operating point.
+
+---
+
+## 4.2 Preliminary Design and Model Specification
+
+### 4.2.1 Dataset Characteristics
+
+Dataset selection for crowd density estimation requires careful consideration of annotation quality, scene diversity, density variance, and applicability to real-world deployment scenarios. Two complementary datasets are employed in this work: NWPU-Crowd as the primary training and evaluation benchmark, and the ShanghaiTech dataset for cross-dataset generalisation evaluation. The statistical characteristics of these datasets are summarised in Table 4.1.
+
+NWPU-Crowd presents extreme diversity in crowd density, encompassing scenes from entirely empty frames (count = 0) to highly congested events with over 20,000 individuals. This breadth makes it uniquely suitable for training and evaluating all three deployed components across the full operating spectrum of the routing system. ShanghaiTech Part A provides moderately dense to very dense scenes with precise point-level annotations, while ShanghaiTech Part B provides predominantly sparse street-level scenes. The complementary density profiles of these datasets enable robust evaluation of generalisation across density distributions.
+
+---
+
+**[Table 4.1 — Dataset Statistical Characteristics]**
+*Required table with the following columns: Characteristic | ShanghaiTech Part A | ShanghaiTech Part B | NWPU-Crowd*
+
+| Characteristic | ShanghaiTech Part A | ShanghaiTech Part B | NWPU-Crowd |
+|---|---|---|---|
+| Total Images | 482 | 716 | 5,109 |
+| Total Annotations | 241,677 | 88,488 | 2,133,375 |
+| Training Images | 300 | 400 | 3,109 |
+| Validation Images | — | — | 500 |
+| Test Images | 182 | 316 | 1,500 |
+| Min Crowd Count | 33 | 9 | 0 |
+| Max Crowd Count | 3,139 | 578 | 20,033 |
+| Mean Count | 501.4 | 123.6 | 417.5 |
+| Std. Deviation | 389.2 | 90.4 | 791.4 |
+| Image Resolution | Variable (~768×1024) | Variable (~768×1024) | Variable (~2,191×3,209) |
+| Usage in this work | Cross-dataset eval only | Cross-dataset eval only | Primary (all components) |
+
+---
+
+### 4.2.2 LCDNet Architecture Specification
+
+**Design Philosophy:**
+
+LCDNet was designed with an explicit focus on parameter efficiency, using depthwise separable convolutions to achieve an approximately 8× reduction in learned parameters relative to standard convolutional architectures of equivalent depth, while maintaining sufficient representational capacity for accurate density estimation in sparse-to-medium crowd conditions. The design is intended to operate as the fast path of the hybrid system and must provide accurate predictions for scenes with fewer than 100 people.
+
+**Architecture Overview:**
+
+LCDNet employs an encoder-decoder architecture with symmetric skip connections that support information flow between spatially co-located encoder and decoder stages. The encoder applies four successive downsampling operations, progressively increasing channel depth to capture hierarchical features ranging from low-level edges and textures to high-level semantic patterns. Each encoder block contains two depthwise separable convolution (DSConv) layers — each comprising a depthwise convolution followed by a pointwise (1×1) convolution, batch normalisation, and ReLU activation — followed by MaxPool2×2 downsampling. The final encoder stage (Stage 4, bottleneck) does not apply pooling. Each decoder stage applies bilinear interpolation upsampling, concatenates the upsampled features with the skip connection from the corresponding encoder stage, and applies two DSConv layers to refine the features. The output head converts the final feature map into a single-channel density map via a 3×3 convolution followed by a 1×1 convolution and ReLU activation, ensuring non-negative density values.
+
+The detailed layer-wise specification is provided in Table 4.2.
+
+---
+
+**[Table 4.2 — LCDNet Detailed Layer-wise Specification]**
+
+| Component | Layer Configuration | Dimensionality Transform | Parameters | Functional Role |
+|---|---|---|---|---|
+| **Encoder Stage 1** | DSConv×2 + MaxPool2×2 | 384×384×3 → 192×192×64 | ~3,500 | Primary feature extraction |
+| **Encoder Stage 2** | DSConv×2 + MaxPool2×2 | 192×192×64 → 96×96×128 | ~17,000 | Intermediate representations |
+| **Encoder Stage 3** | DSConv×2 + MaxPool2×2 | 96×96×128 → 48×48×256 | ~66,000 | Mid-level semantic features |
+| **Encoder Stage 4 (Bottleneck)** | DSConv×2 (no pool) | 48×48×256 → 48×48×512 | ~264,000 | High-level abstractions |
+| Dropout2D (p=0.2) | Regularisation | 48×48×512 | 0 | Prevent overfitting |
+| **Decoder Stage 1** | Upsample + Concat + DSConv×2 | 48×48×512 → 96×96×256 | ~396,000 | Initial spatial reconstruction |
+| **Decoder Stage 2** | Upsample + Concat + DSConv×2 | 96×96×256 → 192×192×128 | ~99,000 | Intermediate upsampling |
+| **Decoder Stage 3** | Upsample + Concat + DSConv×2 | 192×192×128 → 384×384×64 | ~25,000 | Fine-grained reconstruction |
+| **Output Head** | Conv3×3(64→32) + ReLU + Conv1×1(32→1) + ReLU | 384×384×64 → 384×384×1 | ~18,500 | Density map generation |
+| **Total** | | | **≈0.917M** | Full-resolution output |
+
+*DSConv = Depthwise Conv + Pointwise Conv + BN + ReLU. Skip connections concatenate encoder feature maps (before pooling) with upsampled decoder features at each resolution.*
+
+---
+
+**[Figure 4.4 — LCDNet Architecture Diagram]**
+*Required figure. Encoder-decoder block diagram with:*
+*Left side (Encoder): 4 blocks descending left-to-right, showing channel/resolution progression [3→64, 64→128, 128→256, 256→512], MaxPool arrows between blocks.*
+*Right side (Decoder): 3 blocks ascending, showing skip connection arrows (dashed) from encoder to decoder at each resolution.*
+*Bottom: Output Head block → Density Map (1ch, 384×384).*
+*Label each block with its channel count and spatial resolution. Annotate "0.917M total parameters."*
+
+---
+
+### 4.2.3 MobileCount Architecture Specification (Dense Specialist)
+
+**Design Philosophy:**
+
+MobileCount is designed to operate as the high-capacity path of the hybrid system for dense crowd scenes. The architecture leverages the computational efficiency and generalisation capability of a pretrained MobileNetV2 encoder, extended with dilated convolution context blocks for multi-scale feature extraction and a skip-connection fusion module for spatial detail recovery. The model is deployed in knowledge-distilled form, having been trained to replicate the density estimation behaviour of the CSRNet teacher; the teacher is excluded from the deployed pipeline.
+
+**Architecture Overview:**
+
+The encoder is implemented using the MobileNetV2 feature extraction layers split into two stages. Stage 1 (backbone.features[0:7]) produces a spatial feature map at 1/8 of the input resolution with 32 channels — this is retained as the skip connection. Stage 2 (backbone.features[7:14]) further processes the features to produce a 1/16-resolution, 96-channel representation. Three dilated convolution blocks (each: Conv3×3 with dilation=2, batch normalisation, ReLU; 96→96 channels) extract multi-scale contextual information at the 1/16-resolution level. The processed features are upsampled by factor 2 to match the Stage 1 skip resolution (1/8), then concatenated with the skip connection to form a 128-channel combined representation. A fusion module (Conv3×3 (128→64) + BN + ReLU + Conv3×3 (64→32) + BN + ReLU) integrates the combined features. The output head (Conv1×1 (32→1) + ReLU) produces the final density map at 1/8 input resolution. For a 384×384 input, the output is 48×48; the crowd count is derived by summing all spatial values.
+
+The detailed specification of the CSRNet teacher (used during distillation only) is provided in Table 4.4 for reference.
+
+---
+
+**[Table 4.3 — MobileCount Architecture Specification]**
+
+| Component | Configuration | Output Shape | Notes |
+|---|---|---|---|
+| Input | RGB image | B×3×384×384 | Standard resolution |
+| **Encoder Stage 1** (features[0:7]) | MobileNetV2 inverted residuals | B×32×48×48 | Stride 8; skip connection source |
+| **Encoder Stage 2** (features[7:14]) | MobileNetV2 inverted residuals | B×96×24×24 | Stride 16 |
+| **Dilated Context Block 1** | Conv3×3(96→96, dilation=2) + BN + ReLU | B×96×24×24 | Multi-scale context |
+| **Dilated Context Block 2** | Conv3×3(96→96, dilation=2) + BN + ReLU | B×96×24×24 | Expanded receptive field |
+| **Dilated Context Block 3** | Conv3×3(96→96, dilation=2) + BN + ReLU | B×96×24×24 | |
+| Bilinear Upsample ×2 | — | B×96×48×48 | Match Stage 1 resolution |
+| **Concat** (skip + upsampled) | — | B×128×48×48 | 32ch + 96ch |
+| **Fusion Block** | Conv3×3(128→64)+BN+ReLU + Conv3×3(64→32)+BN+ReLU | B×32×48×48 | Feature integration |
+| **Output Head** | Conv1×1(32→1) + ReLU | B×1×48×48 | Density map (1/8 res) |
+| **Total Parameters** | | | **≈0.884M** |
+
+*Count = sum(density_map over all spatial positions)*
+
+---
+
+**[Table 4.4 — CSRNet Teacher Architecture Reference (Training Only — Not Deployed)]**
+
+| Component | Layer Configuration | Dimensionality Transform | Parameters | Status |
+|---|---|---|---|---|
+| Frontend VGG Block 1–2 | 2×Conv3-64, Pool, 2×Conv3-128, Pool | 384×384×3 → 96×96×128 | 260,160 | ImageNet pretrained |
+| Frontend VGG Block 3 | 3×Conv3-256, Pool | 96×96×128 → 48×48×256 | 1,475,328 | ImageNet pretrained |
+| Frontend VGG Block 4–5 | 6×Conv3-512 | 48×48×256 → 48×48×512 | 12,979,200 | ImageNet pretrained |
+| Backend Dilated 1–3 | 3×Conv3-512 (dilation=2) | 48×48×512 → 48×48×512 | 7,079,424 | Randomly init |
+| Backend Dilated 4–6 | Conv3-256, Conv3-128, Conv3-64 (dilation=4) | 48×48×512 → 48×48×64 | 1,548,736 | Randomly init |
+| Output | 1×1 Conv + ReLU | 48×48×64 → 48×48×1 | 65 | Randomly init |
+| **Total** | | | **16,263,489** | **Not deployed** |
+
+---
+
+### 4.2.4 Routing Classifier Specification
+
+**Design Philosophy:**
+
+The routing classifier achieves effective scene complexity assessment via transfer learning, utilising the pretrained MobileNetV2 backbone's visual representations to perform rapid and accurate binary labelling with minimal computational overhead. By operating on the full visual content of the input image rather than hand-crafted proxies such as pixel intensity, the classifier learns to assess scene density from structural, textural, and contextual cues simultaneously.
+
+**Architecture:**
+
+The routing classifier uses the full MobileNetV2 backbone (pretrained on ImageNet) as the feature extractor, replacing the original classification head with a custom two-class head. After the backbone's adaptive average pooling layer produces a 1280-dimensional feature vector, the classification head is:
+
+Dropout(p=0.3) → Linear(1280 → 256) → ReLU → Dropout(p=0.3) → Linear(256 → 2)
+
+The 2-class logits are converted to routing probabilities by softmax: [P(sparse), P(dense)]. The routing decision is: route to MobileCount if P(dense) ≥ p*; route to LCDNet if P(dense) < p*.
+
+The architecture specification is summarised in Table 4.5.
+
+---
+
+**[Table 4.5 — Routing Classifier Architecture Specification]**
+
+| Component | Type | Dimensionality | Parameters | Training Status |
+|---|---|---|---|---|
+| MobileNetV2 Backbone | Feature extractor | 224×224×3 → 1280 | 2,257,984 | Fine-tuned (pretrained init) |
+| Global Average Pooling | Spatial reduction | 1280 | 0 | — |
+| Dropout Layer | Regularisation | 1280 | 0 | p = 0.3 |
+| Linear Layer 1 | Fully connected | 1280 → 256 | 327,936 | Trainable |
+| ReLU | Activation | 256 | 0 | — |
+| Dropout Layer 2 | Regularisation | 256 | 0 | p = 0.3 |
+| Linear Layer 2 (Head) | Fully connected | 256 → 2 | 514 | Trainable |
+| **Total** | | | **~2.552M** | |
+
+*Routing label: sparse (0) if GT count ≤ 100; dense (1) if GT count > 100. Threshold T = 100.*
+
+---
+
+### 4.2.5 Preprocessing Specifications
+
+**Density Map Synthesis:**
+
+Ground-truth density maps are synthesised by placing adaptive Gaussian kernels at annotated head positions. The standard deviation σᵢ of the kernel centred at head position i is given by:
+
+σᵢ = β · d̄ᵢ
+
+where d̄ᵢ = (1/3) · Σⱼ₌₁³ ‖pᵢ − pⱼ‖₂ is the mean Euclidean distance from annotation i to its three nearest neighbours, and β = 0.3 is the empirically established scaling coefficient. This adaptive formulation produces narrower kernels in congested regions (improving localisation precision) and wider kernels in sparse regions (providing adequate spatial coverage). The result is a density map D(x,y) satisfying mass conservation:
+
+∫∫ D(x, y) dxdy = N
+
+where N is the total number of annotated head positions in the image, enabling pixel-wise regression under a supervised learning framework.
+
+---
+
+## 4.3 Selected Design Implementation
+
+### 4.3.1 Implementation Environment
+
+The implementation environment for this project is summarised in Tables 4.6 and 4.7.
+
+---
+
+**[Table 4.6 — Hardware Infrastructure Specification]**
+
+| Component | Technical Specification | Role |
+|---|---|---|
+| GPU | NVIDIA GeForce RTX 3050 (8 GB GDDR6 VRAM) | Model training and inference |
+| CUDA | 12.x with cuDNN | GPU acceleration for deep learning primitives |
+| System Memory | 16 GB DDR4 | Dataset caching and preprocessing |
+| Operating System | Windows 11 Pro (64-bit) | Host environment |
+
+---
+
+**[Table 4.7 — Software Ecosystem Versions]**
+
+| Package | Version | Role |
+|---|---|---|
+| Python | 3.x | Primary runtime environment |
+| PyTorch | 2.6.0 | Deep learning framework |
+| torchvision | 0.21.0 | Vision models and transforms |
+| NumPy | — | Numerical computation |
+| SciPy | — | Scientific computing and .mat file parsing |
+| thop | — | FLOPs measurement |
+
+---
+
+### 4.3.2 Training Methodology and Configuration
+
+**LCDNet Training Setup**
+
+LCDNet is trained on the NWPU-Crowd sparse training subset (images with ground-truth count ≤ 100). The hyperparameter configuration is provided in Table 4.8.
+
+**[Table 4.8 — LCDNet Training Hyperparameters]**
+
+| Hyperparameter | Value | Justification |
+|---|---|---|
+| Batch Size | 8 | Within GPU VRAM budget |
+| Epochs | 100 (early stopping at 50 without improvement) | Allow full convergence |
+| Optimizer | Adam | Adaptive learning rate |
+| Learning Rate | 1×10⁻⁴ | Standard for Adam optimiser |
+| LR Schedule | ReduceLROnPlateau (factor=0.5, patience=15) | Adaptive reduction on plateau |
+| Loss Function | MSE (density map) | Pixel-wise regression |
+| Weight Decay | 1×10⁻⁵ | L2 regularisation |
+| Gradient Clipping | 5.0 (max norm) | Training stability |
+| Augmentation | Flip, Crop, ColorJitter | Generalisation |
+
+---
+
+**MobileCount Baseline Training Setup**
+
+**[Table 4.9 — MobileCount Baseline Training Hyperparameters]**
+
+| Hyperparameter | Value |
+|---|---|
+| Dataset | NWPU-Crowd full training set (3,109 images) |
+| Batch Size | 8 |
+| Epochs | 50 |
+| Optimizer | Adam (lr = 1×10⁻⁴) |
+| LR Schedule | Cosine Annealing |
+| Loss Function | MSE (density map at 1/8 resolution) |
+
+---
+
+**Knowledge Distillation Training Setup**
+
+**[Table 4.10 — Knowledge Distillation Configuration]**
+
+| Hyperparameter | Value | Notes |
+|---|---|---|
+| Student Initialisation | Baseline MobileCount checkpoint | Warm start |
+| Teacher | CSRNet (16.26M, all params frozen) | `requires_grad = False` |
+| Epochs | 12 | Early stop if no improvement |
+| Batch Size | 8 | |
+| Optimizer | AdamW | Decoupled weight decay |
+| Learning Rate | 5×10⁻⁵ | Fine-tuning rate |
+| Weight Decay | 1×10⁻⁴ | Stronger regularisation during distillation |
+| LR Schedule | Cosine Annealing (η_min = 1×10⁻⁷) | Smooth decay |
+| Gradient Clipping | 1.0 (max norm) | Training stability |
+| α (GT density weight) | 0.5 | Ground-truth supervision |
+| β (teacher KD weight) | 0.5 | Teacher imitation |
+| γ (count L1 weight) | 0.05 | Count-level regularisation |
+| Save Path | checkpoints/mobilecount_distilled.pth | |
+
+---
+
+**Routing Classifier Training Setup**
+
+**[Table 4.11 — Routing Classifier Training Hyperparameters]**
+
+| Hyperparameter | Value | Justification |
+|---|---|---|
+| Dataset | NWPU-Crowd (3,109 train, 500 val) | Binary labels from GT count |
+| Batch Size | 32 | Classification task |
+| Epochs | 25 (early stopping patience = 10) | Rapid convergence |
+| Optimizer | Adam | Fine-tuning |
+| Learning Rate | 1×10⁻⁴ | Standard |
+| Weight Decay | 1×10⁻⁵ | L2 regularisation |
+| Loss Function | Cross-Entropy | Binary classification |
+| Dropout | p = 0.3 | Prevent overfitting |
+| Best Model | Epoch 10 (Val Accuracy: 88.80%) | Highest validation accuracy |
+
+---
+
+### 4.3.3 Experimental Findings and Performance Analysis
+
+#### LCDNet Evaluation
+
+LCDNet was evaluated on the NWPU-Crowd validation set (500 images). The full-set MAE of 348.0 reflects the model's exposure to the entire density range, including dense and extreme-density scenes that are outside its specialised operating regime. On the sparse stratum (images with GT count ≤ 100, n = 181), LCDNet achieves an MAE of 21.5, demonstrating strong performance within its designated density range. Table 4.12 summarises the LCDNet performance metrics.
+
+**[Table 4.12 — LCDNet Performance Metrics — NWPU-Crowd Validation Set]**
+
+| Metric | Full Val Set (n=500) | Sparse Only (n=181, count ≤100) |
+|---|---|---|
+| MAE | 348.0 | **21.5** |
+| RMSE | 1,033.9 | — |
+| Inference Time (GPU) | 23.1 ms | — |
+| Inference Time (CPU) | 208.8 ms | — |
+| GPU Peak Memory | 368.8 MB | — |
+| GFLOPs | 14.59 | — |
+| Parameters | 0.917M | — |
+
+*Note: The high full-set MAE is expected — LCDNet is the sparse specialist and is only invoked for images with count ≤ 100 in the hybrid system.*
+
+---
+
+**[Figure 4.5 — LCDNet Training and Validation Loss Curves]**
+*Required graph. Dual-line plot:*
+*X-axis: Epoch (0 to convergence point). Y-axis: MSE Loss.*
+*Two lines: Training Loss (blue, solid) and Validation Loss (orange, dashed).*
+*Mark learning rate reduction events with vertical dashed lines.*
+*Title: "LCDNet Training Convergence — NWPU-Crowd Sparse Subset."*
+
+---
+
+**[Figure 4.6 — LCDNet Qualitative Predictions]**
+*Required figure. A grid of representative predictions (4–6 samples):*
+*Each column: (a) Input image, (b) Ground-truth density map, (c) Predicted density map, (d) Absolute error map.*
+*Select samples from the sparse stratum (count ≤ 100) where LCDNet performs well.*
+*Caption: "LCDNet qualitative results — sparse crowd scenes."*
+
+---
+
+#### MobileCount Knowledge Distillation Evaluation
+
+MobileCount was evaluated in both its baseline (directly supervised) and distilled (teacher-improved) forms on the NWPU-Crowd validation set. Table 4.13 summarises the performance of both configurations, and Table 4.14 documents the per-epoch distillation training progression.
+
+**[Table 4.13 — MobileCount Performance Metrics — NWPU-Crowd Validation Set]**
+
+| Metric | Baseline (no KD) | Distilled (KD) | Improvement |
+|---|---|---|---|
+| MAE | 213.2 | **198.7** | −14.5 |
+| RMSE | 803.6 | 778.5 | −25.1 |
+| 95% CI (MAE) | [155.4, 292.6] | [143.8, 275.1] | — |
+| Inference Time (GPU) | 3.4 ms | 3.4 ms | 0 |
+| Inference Time (CPU) | 13.5 ms | 13.5 ms | 0 |
+| GPU Peak Memory | 63.6 MB | 63.6 MB | 0 |
+| GFLOPs | 1.07 | 1.07 | 0 |
+| Parameters | 0.884M | 0.884M | 0 |
+
+---
+
+**[Table 4.14 — Knowledge Distillation Per-Epoch Training Log]**
+
+| Epoch | Validation MAE | Notes |
+|---|---|---|
+| 0 | 239.6 | Post-distillation loss shift from baseline |
+| 1 | 217.6 | Rapid initial improvement |
+| 2 | 216.2 | |
+| 3 | 208.9 | Stable improvement phase |
+| 4 | 227.9 | Temporary increase |
+| 5 | 200.2 | Crossed below baseline MAE |
+| 6 | 203.8 | |
+| 7 | 204.4 | |
+| 8 | 215.6 | |
+| **9** | **198.7** | **Best checkpoint — saved** |
+| 10 | 198.8 | |
+| 11 | 200.2 | Slight increase; training complete |
+| **Baseline reference** | **213.2** | Pre-distillation MobileCount MAE |
+
+---
+
+**[Figure 4.7 — Knowledge Distillation Training Curve]**
+*Required graph. Line graph:*
+*X-axis: Epoch (0–11). Y-axis: Validation MAE on NWPU-Crowd (range: 195–245).*
+*Plot the epoch MAE values from Table 4.14 as a solid blue line with markers.*
+*Add a horizontal dashed red line at MAE = 213.2 labelled "Baseline MobileCount (no KD)".*
+*Mark Epoch 9 (MAE = 198.7) with a gold star: "Best checkpoint saved".*
+*Shade area between the curve and the baseline line when the curve is below it (blue fill = distillation improvement region).*
+*Title: "MobileCount Knowledge Distillation — Validation MAE per Epoch."*
+
+---
+
+#### Routing Classifier Evaluation
+
+The routing classifier was trained to perform binary scene classification (sparse / dense) enabling adaptive model selection in the hybrid system. Table 4.15 summarises the training dynamics at selected epochs, and Table 4.16 provides the final performance metrics.
+
+**[Table 4.15 — Routing Classifier Training Dynamics (Selected Epochs)]**
+
+| Epoch | Train Loss | Train Acc (%) | Val Loss | Val Acc (%) | Notes |
+|---|---|---|---|---|---|
+| 1 | 0.4086 | 80.48 | 0.2887 | 87.60 | Rapid initial learning |
+| 5 | 0.0944 | 96.62 | 0.3810 | 87.00 | Training accuracy improving |
+| **10** | **0.0125** | **99.61** | **0.5096** | **88.80** | **Best validation accuracy** |
+| 15 | 0.0114 | 99.65 | 0.6424 | 87.40 | Validation plateauing |
+| 20 | 0.0072 | 99.71 | 0.5792 | 86.80 | Training complete |
+
+**[Table 4.16 — Routing Classifier Final Performance Metrics]**
+
+| Metric | Value |
+|---|---|
+| Best Validation Accuracy | 88.80% (Epoch 10) |
+| Expected Calibration Error (ECE, 10-bin) | 0.095 |
+| GPU Inference Latency | 4.8 ms/image |
+| CPU Inference Latency | 8.9 ms/image |
+| GPU Peak Memory | 52.6 MB |
+| Parameters | 2.552M |
+| GFLOPs | 0.33 |
+| Routing Threshold T | 100 (GT count) |
+
+**Confusion Matrix (NWPU-Crowd val, 500 images):**
+
+| | Predicted Sparse | Predicted Dense |
+|---|---|---|
+| **Actual Sparse (n=181)** | 161 (88.9%) | 20 (11.1%) |
+| **Actual Dense (n=319)** | 36 (11.3%) | 283 (88.7%) |
+
+Performance metrics: Precision (sparse): 81.7%, Recall (sparse): 88.9%, Precision (dense): 93.4%, Recall (dense): 88.7%, F1-Score: 88.8%.
+
+The gap between training accuracy (99.71%) and validation accuracy (88.80%) by epoch 20 suggests some overfitting. However, the strong validation performance confirms that the router generalises effectively to unseen images. Classification errors are concentrated near the routing boundary (counts between approximately 80 and 120 individuals) where image complexity is inherently ambiguous.
+
+---
+
+**[Figure 4.8 — Routing Classifier Training Dynamics]**
+*Required graph. Dual-panel figure:*
+*Left panel: Training Accuracy and Validation Accuracy vs. Epoch (0–20). Two lines (blue = train, orange = val). Mark the best epoch (10) with a vertical dashed line.*
+*Right panel: Training Loss and Validation Loss vs. Epoch. Two lines.*
+*Title: "Routing Classifier Training Dynamics — NWPU-Crowd."*
+
+---
+
+#### Hybrid System Evaluation
+
+The hybrid system — combining the routing classifier, LCDNet, and the knowledge-distilled MobileCount — was evaluated on the NWPU-Crowd validation set (500 images). Table 4.17 presents the full comparison of all system configurations, and Table 4.18 summarises the routing distribution statistics.
+
+**[Table 4.17 — Hybrid System Performance Comparison — NWPU-Crowd Validation Set]**
+
+| Model | MAE ↓ | RMSE ↓ | 95% CI (MAE) | Inference Time (ms) | Params |
+|---|---|---|---|---|---|
+| LCDNet Only | 348.0 | 1,033.9 | [269.5, 443.1] | 40.7 | 0.92M |
+| MobileCount (baseline) | 213.2 | 803.6 | [155.4, 292.6] | 30.5 | 0.88M |
+| MobileCount (distilled) | 198.7 | 778.5 | [143.8, 275.1] | 30.5 | 0.88M |
+| Hybrid-Hard (baseline MC) | 183.0 | 787.7 | [126.2, 260.3] | 53.4 | 4.35M |
+| Hybrid-Soft (fusion) | 182.6 | 763.8 | [127.9, 259.0] | 56.0 | 4.35M |
+| **Hybrid-Hard (distilled, p*=0.85)** | **180.9** | **763.6** | — | **~55** | **4.35M** |
+| Oracle Router (upper bound) | 166.6 | 751.1 | [112.9, 241.5] | — | — |
+
+**[Table 4.18 — Routing Distribution Statistics — NWPU-Crowd Validation (p*=0.85)]**
+
+| Metric | Value | Percentage |
+|---|---|---|
+| Total images evaluated | 500 | 100% |
+| Routed to MobileCount (dense path) | 315 | 63.0% |
+| Routed to LCDNet (sparse path) | 185 | 37.0% |
+| Router inference time | ~4.8 ms | Overhead |
+| Dense path total latency | ~8 ms | Router + MobileCount |
+| Sparse path total latency | ~28 ms | Router + LCDNet |
+| Average end-to-end latency | ~55 ms | Including image load + transforms |
+
+---
+
+**[Table 4.19 — Per-Component Efficiency Profile]**
+
+| Component | Params (M) | GFLOPs | GPU Latency (ms) | CPU Latency (ms) | GPU Mem (MB) |
+|---|---|---|---|---|---|
+| LCDNet | 0.917 | 14.59 | 23.1 | 208.8 | 368.8 |
+| MobileCount (distilled) | 0.884 | 1.07 | 3.4 | 13.5 | 63.6 |
+| Router | 2.552 | 0.33 | 4.8 | 8.9 | 52.6 |
+| CSRNet (teacher, not deployed) | 16.263 | — | 37.4 | — | ~1,400 |
+| **Hybrid (deployed total)** | **4.354** | — | ~55 (avg) | ~210 (avg) | — |
+
+---
+
+**[Figure 4.9 — Hybrid System Results Bar Chart]**
+*Required graph. Bar chart with 6 bars:*
+*LCDNet Only (348.0, blue), MobileCount baseline (213.2, grey), MobileCount distilled (198.7, orange), Hybrid-baseline (183.0, light green), Hybrid-Soft (182.6, yellow), Hybrid-Hard distilled p*=0.85 (180.9, gold/highlighted), Oracle (166.6, dashed outline).*
+*Annotate each bar with its MAE. Add horizontal dashed line at Oracle MAE (166.6).*
+*Title: "System Configuration Comparison — NWPU-Crowd Validation MAE."*
+
+---
+
+**[Figure 4.10 — Qualitative Density Map Results]**
+*Required figure. Grid of 6 sample predictions, 2 rows × 3 columns:*
+*Row 1: Three sparse scene samples (routed to LCDNet).*
+*Row 2: Three dense scene samples (routed to MobileCount).*
+*Each column: (a) Input image, (b) Ground-truth density map, (c) Predicted density map.*
+*Annotate predicted count and GT count for each sample.*
+*Caption: "Hybrid system qualitative results: top row (LCDNet path), bottom row (MobileCount path)."*
